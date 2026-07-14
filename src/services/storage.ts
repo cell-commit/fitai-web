@@ -410,6 +410,14 @@ export async function getLatestHealthSummary(): Promise<HealthImportSummary | nu
   return all[0] ?? null;
 }
 
+export async function deleteHealthSummary(id: string): Promise<void> {
+  const all = await getHealthSummaries();
+  await store.setItem(
+    KEYS.HEALTH_SUMMARIES,
+    JSON.stringify(all.filter((s) => s.id !== id))
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
 // WP1 — exercise-name → slug match cache
 // ─────────────────────────────────────────────────────────────

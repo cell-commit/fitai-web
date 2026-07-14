@@ -1565,3 +1565,67 @@ a {
   background: var(--danger);
   color: #fff;
 }
+
+/* ───────────────────────────────────────────────────────────
+ * W6 — Health Import pane (appended so the merge back stays trivial)
+ * ─────────────────────────────────────────────────────────── */
+.health-result {
+  border-color: var(--accent);
+}
+.health-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--sp-sm);
+  margin-bottom: var(--sp-md);
+}
+.health-stat {
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  padding: var(--sp-sm) var(--sp-md);
+}
+.health-stat__value {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+.health-stat__label {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.health-summary-text {
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.health-list {
+  display: flex;
+  flex-direction: column;
+}
+.health-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+}
+.health-row--current {
+  border-color: var(--accent);
+}
+.health-row__body {
+  flex: 1;
+  min-width: 0;
+}
+.health-row__range {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+.health-row__meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.health-row__delete {
+  flex: 0 0 auto;
+  color: var(--danger);
+
+}
