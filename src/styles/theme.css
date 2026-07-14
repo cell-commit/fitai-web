@@ -1,0 +1,65 @@
+/* FitAI theme — ported from the RN app's src/theme/index.ts palette.
+ * Dark app, #0D0D0D base. Exposed as CSS custom properties so components style
+ * with var(--…) instead of a JS theme object. */
+
+:root {
+  /* Surfaces */
+  --bg: #0d0d0d;
+  --surface: #161618;
+  --surface-2: #1e1e22;
+  --surface-3: #28282e;
+
+  /* Accent */
+  --accent: #ff6b35;
+  --accent-muted: rgba(255, 107, 53, 0.15);
+  --accent-glow: rgba(255, 107, 53, 0.08);
+
+  /* Status */
+  --success: #00c896;
+  --success-muted: rgba(0, 200, 150, 0.15);
+  --warning: #ffb800;
+  --warning-muted: rgba(255, 184, 0, 0.15);
+  --danger: #ff4757;
+  --danger-muted: rgba(255, 71, 87, 0.15);
+
+  /* Text */
+  --text: #ffffff;
+  --text-secondary: #a0a0a8;
+  --text-muted: #606068;
+
+  /* Borders */
+  --border: #2a2a30;
+  --border-light: #222228;
+
+  /* Font sizes (px, from RN theme.fontSizes) */
+  --fs-xs: 11px;
+  --fs-sm: 13px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 20px;
+  --fs-xxl: 24px;
+  --fs-xxxl: 32px;
+
+  /* Spacing (from RN theme.spacing) */
+  --sp-xs: 4px;
+  --sp-sm: 8px;
+  --sp-md: 16px;
+  --sp-lg: 24px;
+  --sp-xl: 32px;
+  --sp-xxl: 48px;
+
+  /* Radius (from RN theme.radius) */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-round: 999px;
+
+  /* Layout */
+  --tabbar-height: 56px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
+}

@@ -1,122 +1,136 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useEffect, useState } from 'react';
+import {
+  CalendarIcon,
+  DumbbellIcon,
+  ChatIcon,
+  TrendingIcon,
+  MoreIcon,
+} from './components/icons';
+import { Placeholder } from './panes/Placeholder';
+import { MorePane } from './panes/MorePane';
+import { SettingsPane } from './panes/SettingsPane';
+import { refreshAll } from './services/driveSync';
 
-function App() {
-  const [count, setCount] = useState(0)
+type Tab = 'week' | 'today' | 'coach' | 'progress' | 'more';
+
+const TABS: { id: Tab; label: string; Icon: typeof CalendarIcon }[] = [
+  { id: 'week', label: 'Week', Icon: CalendarIcon },
+  { id: 'today', label: 'Today', Icon: DumbbellIcon },
+  { id: 'coach', label: 'Coach', Icon: ChatIcon },
+  { id: 'progress', label: 'Progress', Icon: TrendingIcon },
+  { id: 'more', label: 'More', Icon: MoreIcon },
+];
+
+const TITLES: Record<Tab, string> = {
+  week: 'Week',
+  today: 'Today',
+  coach: 'Coach',
+  progress: 'Progress',
+  more: 'More',
+};
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>('today');
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Pull the latest Drive files when the app regains focus. Silent no-op when
+  // sync isn't configured (design §6 web pivot).
+  useEffect(() => {
+    const onFocus = () => {
+      void refreshAll();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void refreshAll();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    // Initial pull on mount.
+    void refreshAll();
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
+
+  const inSettings = tab === 'more' && showSettings;
+  const headerTitle = inSettings ? 'Settings' : TITLES[tab];
+
+  function selectTab(next: Tab) {
+    setTab(next);
+    if (next !== 'more') setShowSettings(false);
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+    <div className="app-shell">
+      <main className="app-main">
+        <div className="pane__header">
+          {inSettings && (
+            <button
+              className="btn btn--ghost btn--inline"
+              style={{ marginBottom: 'var(--sp-sm)' }}
+              onClick={() => setShowSettings(false)}
+            >
+              ‹ Back
+            </button>
+          )}
+          <h1 className="pane__title">{headerTitle}</h1>
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
 
-      <div className="ticks"></div>
+        {tab === 'week' && (
+          <Placeholder
+            icon={<CalendarIcon />}
+            title="Weekly program"
+            badge="COMING IN W2"
+            blurb="Your adaptive Push / Pull / Full-Body week, generated and amended by the coach."
+          />
+        )}
+        {tab === 'today' && (
+          <Placeholder
+            icon={<DumbbellIcon />}
+            title="Today's session"
+            badge="COMING IN W3"
+            blurb="Readiness check-in, exercise cards with images, and per-set logging."
+          />
+        )}
+        {tab === 'coach' && (
+          <Placeholder
+            icon={<ChatIcon />}
+            title="Coach chat"
+            badge="COMING IN W4"
+            blurb="Talk to your coach — it updates your program and training files as you chat."
+          />
+        )}
+        {tab === 'progress' && (
+          <Placeholder
+            icon={<TrendingIcon />}
+            title="Progress"
+            badge="COMING IN W3/W5"
+            blurb="Session history and progress photos with coach vision feedback."
+          />
+        )}
+        {tab === 'more' &&
+          (showSettings ? (
+            <SettingsPane />
+          ) : (
+            <MorePane onOpenSettings={() => setShowSettings(true)} />
+          ))}
+      </main>
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      <nav className="tabbar">
+        {TABS.map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            className={
+              'tabbar__tab' + (tab === id ? ' tabbar__tab--active' : '')
+            }
+            onClick={() => selectTab(id)}
+            aria-current={tab === id ? 'page' : undefined}
+          >
+            <Icon />
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
 }
-
-export default App
