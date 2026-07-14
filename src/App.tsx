@@ -6,9 +6,9 @@ import {
   TrendingIcon,
   MoreIcon,
 } from './components/icons';
-import { Placeholder } from './panes/Placeholder';
 import { WeekPane } from './panes/WeekPane';
 import { TodayPane } from './panes/TodayPane';
+import { CoachPane } from './panes/CoachPane';
 import { ProgressPane } from './panes/ProgressPane';
 import { MorePane } from './panes/MorePane';
 import { SettingsPane } from './panes/SettingsPane';
@@ -81,14 +81,7 @@ export default function App() {
 
         {tab === 'week' && <WeekPane />}
         {tab === 'today' && <TodayPane onGoToWeek={() => selectTab('week')} />}
-        {tab === 'coach' && (
-          <Placeholder
-            icon={<ChatIcon />}
-            title="Coach chat"
-            badge="COMING IN W4"
-            blurb="Talk to your coach — it updates your program and training files as you chat."
-          />
-        )}
+        {tab === 'coach' && <CoachPane />}
         {tab === 'progress' && <ProgressPane />}
         {tab === 'more' &&
           (showSettings ? (

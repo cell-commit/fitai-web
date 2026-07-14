@@ -139,6 +139,26 @@ export async function getCached(name: DriveFileName): Promise<CachedFile | null>
   return cache[name] ?? null;
 }
 
+/**
+ * Optimistically overwrite the cached content of a file without touching the
+ * server, preserving the last-known modifiedTime. Used by the coach's
+ * edit_training_status handler so successive edits in a conversation match
+ * against the already-applied text while the real write drains through the
+ * queue (the eventual server response reconciles modifiedTime).
+ */
+export async function setCachedContent(
+  name: DriveFileName,
+  content: string
+): Promise<void> {
+  const existing = await getCached(name);
+  await writeCacheEntry({
+    name,
+    content,
+    modifiedTime: existing?.modifiedTime ?? new Date().toISOString(),
+    fetchedAt: Date.now(),
+  });
+}
+
 // ─────────────────────────────────────────────────────────────
 // Queue
 // ─────────────────────────────────────────────────────────────

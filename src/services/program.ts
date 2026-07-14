@@ -283,6 +283,79 @@ function exercisesEqual(a: ProgramExercise[], b: ProgramExercise[]): boolean {
   });
 }
 
+/**
+ * Turn a validated model week into the persisted WeeklyProgram, reconciled
+ * against the current stored week: days already marked 'done' are copied back
+ * verbatim (never touched), days whose exercises are unchanged keep their prior
+ * status, and days whose exercises changed are marked 'amended'. Bumps the
+ * revision, persists, and warms the image cache. Shared by amendProgram() and
+ * the coach's update_weekly_program tool.
+ */
+async function reconcileAndSave(
+  model: ModelProgram,
+  current: WeeklyProgram | null
+): Promise<{ program: WeeklyProgram; changedDates: string[] }> {
+  const filledDays = await fillSlugs(model.days);
+  const currentByDate = new Map((current?.days ?? []).map((d) => [d.date, d]));
+  const changedDates: string[] = [];
+
+  const days: ProgramDay[] = filledDays.map((incoming) => {
+    const prior = currentByDate.get(incoming.date);
+    if (prior && prior.status === 'done') return prior; // untouchable
+    if (prior && exercisesEqual(prior.exercises, incoming.exercises)) {
+      return { ...incoming, status: prior.status };
+    }
+    if (prior) changedDates.push(incoming.date);
+    return { ...incoming, status: 'amended' };
+  });
+
+  const program: WeeklyProgram = {
+    weekStart: current?.weekStart ?? model.weekStart,
+    days,
+    generatedAt: Date.now(),
+    revision: (current?.revision ?? 0) + 1,
+    rationale: model.rationale ?? current?.rationale,
+  };
+
+  await saveWeeklyProgram(program);
+  prefetchWeekImages(program);
+  return { program, changedDates };
+}
+
+const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** Short weekday for an ISO date (local noon to dodge TZ edges). */
+function weekdayShort(date: string): string {
+  return WEEKDAY_SHORT[new Date(`${date}T12:00:00`).getDay()] ?? date;
+}
+
+function summarizeChange(changedDates: string[]): string {
+  if (changedDates.length === 0) return 'Updated the weekly program';
+  const days = changedDates.map(weekdayShort).join(', ');
+  return `Updated the weekly program — ${days}`;
+}
+
+export interface ProgramUpdateResult {
+  program: WeeklyProgram;
+  changedDates: string[];
+  /** Short chip/tool-result summary, e.g. "Updated the weekly program — Wed, Fri". */
+  summary: string;
+}
+
+/**
+ * Apply a coach-supplied full-week replacement (the update_weekly_program tool).
+ * Validates the raw model object, reconciles against the stored week (preserving
+ * done days), persists, and returns a short summary for the chat tool chip.
+ */
+export async function applyProgramReplacement(
+  raw: unknown
+): Promise<ProgramUpdateResult> {
+  const model = validateModelProgram(raw);
+  const current = await getWeeklyProgram();
+  const { program, changedDates } = await reconcileAndSave(model, current);
+  return { program, changedDates, summary: summarizeChange(changedDates) };
+}
+
 // ─────────────────────────────────────────────────────────────
 // Generate
 // ─────────────────────────────────────────────────────────────
@@ -371,29 +444,7 @@ Return the FULL replacement week (all 7 days, same dates, weekStart ${current.we
     PROGRAM_SCHEMA
   );
   const model = validateModelProgram(raw);
-  const filledDays = await fillSlugs(model.days);
-
-  // Reconcile against the current week: keep done days; mark changed days.
-  const currentByDate = new Map(current.days.map((d) => [d.date, d]));
-  const days: ProgramDay[] = filledDays.map((incoming) => {
-    const prior = currentByDate.get(incoming.date);
-    if (prior && prior.status === 'done') return prior; // untouchable
-    if (prior && exercisesEqual(prior.exercises, incoming.exercises)) {
-      return { ...incoming, status: prior.status };
-    }
-    return { ...incoming, status: 'amended' };
-  });
-
-  const program: WeeklyProgram = {
-    weekStart: current.weekStart,
-    days,
-    generatedAt: Date.now(),
-    revision: current.revision + 1,
-    rationale: model.rationale ?? current.rationale,
-  };
-
-  await saveWeeklyProgram(program);
-  prefetchWeekImages(program);
+  const { program } = await reconcileAndSave(model, current);
   return program;
 }
 

@@ -1077,3 +1077,222 @@ a {
   border-top: 1px solid var(--border);
   padding-top: var(--sp-md);
 }
+
+/* ─────────────────────────────────────────────────────────────
+ * Coach chat (W4)
+ * ───────────────────────────────────────────────────────────── */
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-md) var(--sp-md) 0;
+}
+
+/* Connection / context line under the mode toggle. */
+.chat__context {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  padding: 2px 2px var(--sp-sm);
+}
+
+.chat__context-text {
+  flex: 1 1 auto;
+}
+
+.chat__context-refresh {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-round);
+  flex: 0 0 auto;
+}
+.dot--ok {
+  background: var(--success);
+}
+.dot--off {
+  background: var(--text-muted);
+}
+
+/* Message list — natural flow; the input bar is fixed, so leave room for it. */
+.chat__messages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+  min-height: 40vh;
+  padding-bottom: 84px;
+}
+
+.bubble-row {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+}
+.bubble-row--user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+.bubble-row--coach {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.bubble {
+  border-radius: var(--r-lg);
+  padding: 10px var(--sp-md);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bubble--user {
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: var(--r-sm);
+}
+.bubble--coach {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: var(--r-sm);
+}
+
+/* Tool-event chips under a coach bubble. */
+.tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-xs);
+  margin-top: var(--sp-xs);
+}
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--accent-muted);
+  color: var(--accent);
+  border-radius: var(--r-round);
+  padding: 3px 10px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.tool-chip__icon {
+  font-size: var(--fs-sm);
+}
+
+/* Typing indicator. */
+.bubble--typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 14px var(--sp-md);
+}
+.typing__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-round);
+  background: var(--text-secondary);
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+.typing__dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing__dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typing-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* Empty state. */
+.chat__empty {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: var(--sp-xl) var(--sp-md);
+  margin: auto 0;
+}
+.chat__empty-icon {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto var(--sp-sm);
+  color: var(--text-muted);
+}
+.chat__empty-title {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: var(--sp-xs);
+}
+
+.chat__error {
+  margin: 0 var(--sp-md) var(--sp-sm);
+}
+
+/* Fixed input bar, pinned above the tab bar (mirrors .finish-footer). */
+.chat__inputbar {
+  position: fixed;
+  bottom: calc(var(--tabbar-height) + var(--safe-bottom));
+  left: 0;
+  right: 0;
+  max-width: 640px;
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.chat__textarea {
+  flex: 1 1 auto;
+  resize: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  color: var(--text);
+  font-family: var(--font-family);
+  font-size: var(--fs-md);
+  line-height: 1.4;
+  padding: 10px var(--sp-md);
+  max-height: 160px;
+  overflow-y: auto;
+}
+.chat__textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.chat__send {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: var(--r-round);
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.chat__send:disabled {
+  background: var(--surface-3);
+  color: var(--text-muted);
+  cursor: default;
+}
