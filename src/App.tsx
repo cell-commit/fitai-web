@@ -12,6 +12,7 @@ import { CoachPane } from './panes/CoachPane';
 import { ProgressPane } from './panes/ProgressPane';
 import { MorePane } from './panes/MorePane';
 import { SettingsPane } from './panes/SettingsPane';
+import { HealthImportPane } from './panes/HealthImportPane';
 import { refreshAll } from './services/driveSync';
 
 type Tab = 'week' | 'today' | 'coach' | 'progress' | 'more';
@@ -32,9 +33,17 @@ const TITLES: Record<Tab, string> = {
   more: 'More',
 };
 
+type MoreView = 'root' | 'settings' | 'health';
+
+const MORE_TITLES: Record<MoreView, string> = {
+  root: 'More',
+  settings: 'Settings',
+  health: 'Health Import',
+};
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('today');
-  const [showSettings, setShowSettings] = useState(false);
+  const [moreView, setMoreView] = useState<MoreView>('root');
 
   // Pull the latest Drive files when the app regains focus. Silent no-op when
   // sync isn't configured (design §6 web pivot).
@@ -55,23 +64,23 @@ export default function App() {
     };
   }, []);
 
-  const inSettings = tab === 'more' && showSettings;
-  const headerTitle = inSettings ? 'Settings' : TITLES[tab];
+  const inMoreSub = tab === 'more' && moreView !== 'root';
+  const headerTitle = tab === 'more' ? MORE_TITLES[moreView] : TITLES[tab];
 
   function selectTab(next: Tab) {
     setTab(next);
-    if (next !== 'more') setShowSettings(false);
+    if (next !== 'more') setMoreView('root');
   }
 
   return (
     <div className="app-shell">
       <main className="app-main">
         <div className="pane__header">
-          {inSettings && (
+          {inMoreSub && (
             <button
               className="btn btn--ghost btn--inline"
               style={{ marginBottom: 'var(--sp-sm)' }}
-              onClick={() => setShowSettings(false)}
+              onClick={() => setMoreView('root')}
             >
               ‹ Back
             </button>
@@ -83,12 +92,14 @@ export default function App() {
         {tab === 'today' && <TodayPane onGoToWeek={() => selectTab('week')} />}
         {tab === 'coach' && <CoachPane />}
         {tab === 'progress' && <ProgressPane />}
-        {tab === 'more' &&
-          (showSettings ? (
-            <SettingsPane />
-          ) : (
-            <MorePane onOpenSettings={() => setShowSettings(true)} />
-          ))}
+        {tab === 'more' && moreView === 'root' && (
+          <MorePane
+            onOpenSettings={() => setMoreView('settings')}
+            onOpenHealth={() => setMoreView('health')}
+          />
+        )}
+        {tab === 'more' && moreView === 'settings' && <SettingsPane />}
+        {tab === 'more' && moreView === 'health' && <HealthImportPane />}
       </main>
 
       <nav className="tabbar">
