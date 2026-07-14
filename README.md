@@ -1,32 +1,33 @@
-# React + TypeScript + Vite
+# FitAI
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Personal adaptive training coach — a mobile-first PWA (Vite + React 19 +
+TypeScript). Weekly Push/Pull/Full-Body program generated and amended by Claude,
+in-app coach chat that mutates the program and your canonical Google Drive
+training files, workout logging with exercise images, progress photos with AI
+vision feedback, Apple Health imports, and nutrition guidance. All data lives on
+the device; the Anthropic API key and Drive sync token are entered on-device in
+Settings (no secrets are bundled or served).
 
-Currently, two official plugins are available:
+## Setup & phone install
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+See **[SETUP.md](SETUP.md)** — written for the end user: Add to Home Screen,
+paste the Anthropic API key, deploy the Drive sync bridge
+(**[docs/apps-script/README.md](docs/apps-script/README.md)**), optional Apple
+Health import, and how automatic updates work.
 
-## React Compiler
+## Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install        # install dependencies
+npm run dev        # dev server at http://localhost:5173/  (base '/')
+npm test           # vitest run
+npm run typecheck  # tsc --noEmit
+npm run build      # production build → dist/
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Deploy
+
+Push to `main`. The workflow in `.github/workflows/deploy.yml` runs typecheck +
+tests, builds with the GitHub Pages base path
+(`GHPAGES_BASE=/fitai-web/`, the single source of truth for the repo path), and
+publishes to GitHub Pages at `https://<owner>.github.io/fitai-web/`.

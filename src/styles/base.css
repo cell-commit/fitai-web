@@ -1629,3 +1629,69 @@ a {
   color: var(--danger);
 
 }
+
+/* ── Error boundary (app-wide crash fallback) ──────────────── */
+.error-boundary {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-lg);
+  background: var(--bg);
+}
+.error-boundary__card {
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+}
+.error-boundary__title {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  color: var(--text);
+}
+.error-boundary__body {
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.error-boundary__detail {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  word-break: break-word;
+}
+
+/* ── Update toast (new deploy waiting) ─────────────────────── */
+.update-toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--tabbar-height) + var(--safe-bottom) + var(--sp-md));
+  z-index: 30;
+  width: calc(100% - 2 * var(--sp-md));
+  max-width: 480px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-md);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-sm) var(--sp-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.update-toast__text {
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+.update-toast__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  flex: 0 0 auto;
+}

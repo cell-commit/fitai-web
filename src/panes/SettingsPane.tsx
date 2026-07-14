@@ -230,6 +230,9 @@ export function SettingsPane() {
           )}
         </div>
       )}
+
+      <div className="section-label">About</div>
+      <p className="field__hint">FitAI v{__APP_VERSION__}</p>
     </div>
   );
 }

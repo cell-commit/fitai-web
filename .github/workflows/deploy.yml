@@ -1,0 +1,76 @@
+name: Deploy to GitHub Pages
+
+# Build, test, and deploy the FitAI PWA to GitHub Pages on every push to main.
+# The app ships zero secrets (the Anthropic API key and Drive sync token are
+# entered on-device in Settings), so nothing here needs repository secrets.
+
+on:
+  push:
+    branches: [main]
+  # Allow a manual run from the Actions tab.
+  workflow_dispatch:
+
+# Least-privilege by default; the deploy job widens to what Pages needs.
+permissions:
+  contents: read
+
+# One live deployment at a time; don't cancel an in-flight one mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # ── Gate: typecheck + tests must pass before we build/deploy ──
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx vitest run
+
+  # ── Build the production bundle with the Pages base path ─────
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          # Auto-enable Pages on the repo if it isn't already.
+          enablement: true
+      - run: npm ci
+      - name: Build
+        # base-path lives in exactly one place: this env var. It must match the
+        # repo name so assets resolve under https://<owner>.github.io/<repo>/.
+        env:
+          GHPAGES_BASE: /fitai-web/
+        run: npm run build
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  # ── Publish the artifact to Pages ────────────────────────────
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # publish to Pages
+      id-token: write # OIDC token for deploy-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
