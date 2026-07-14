@@ -3,7 +3,7 @@ import type { SessionLog } from '../types';
 import { listSessionLogs, formatDisplayDate } from '../services/storage';
 import { formatSetsSummary } from '../services/sessionLog';
 import { ExerciseImage } from '../components/ExerciseImage';
-import { TrendingIcon } from '../components/icons';
+import { PhotosSegment } from './PhotosSegment';
 import { FOCUS_LABELS } from './focus';
 
 type Segment = 'photos' | 'history';
@@ -32,20 +32,7 @@ export function ProgressPane() {
         </button>
       </div>
 
-      {segment === 'photos' ? <PhotosPlaceholder /> : <History />}
-    </div>
-  );
-}
-
-function PhotosPlaceholder() {
-  return (
-    <div className="placeholder">
-      <div className="placeholder__icon">
-        <TrendingIcon />
-      </div>
-      <div className="placeholder__title">Progress photos</div>
-      <span className="placeholder__badge">COMING IN W5</span>
-      <p>Capture progress photos and get coach vision feedback.</p>
+      {segment === 'photos' ? <PhotosSegment /> : <History />}
     </div>
   );
 }
