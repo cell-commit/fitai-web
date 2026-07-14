@@ -272,6 +272,14 @@ export async function saveSessionLog(log: SessionLog): Promise<void> {
   await store.setItem(KEYS.SESSION_LOGS, JSON.stringify(all));
 }
 
+/** All session logs, newest first (for the Progress → History list). */
+export async function listSessionLogs(): Promise<SessionLog[]> {
+  const all = await getAllSessionLogs();
+  return [...all].sort(
+    (a, b) => b.date.localeCompare(a.date) || b.startedAt - a.startedAt
+  );
+}
+
 /** Session logs within the last `days` days, newest first. */
 export async function getSessionLogs(days: number = 14): Promise<SessionLog[]> {
   const all = await getAllSessionLogs();

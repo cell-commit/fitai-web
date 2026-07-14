@@ -8,6 +8,8 @@ import {
 } from './components/icons';
 import { Placeholder } from './panes/Placeholder';
 import { WeekPane } from './panes/WeekPane';
+import { TodayPane } from './panes/TodayPane';
+import { ProgressPane } from './panes/ProgressPane';
 import { MorePane } from './panes/MorePane';
 import { SettingsPane } from './panes/SettingsPane';
 import { refreshAll } from './services/driveSync';
@@ -78,14 +80,7 @@ export default function App() {
         </div>
 
         {tab === 'week' && <WeekPane />}
-        {tab === 'today' && (
-          <Placeholder
-            icon={<DumbbellIcon />}
-            title="Today's session"
-            badge="COMING IN W3"
-            blurb="Readiness check-in, exercise cards with images, and per-set logging."
-          />
-        )}
+        {tab === 'today' && <TodayPane onGoToWeek={() => selectTab('week')} />}
         {tab === 'coach' && (
           <Placeholder
             icon={<ChatIcon />}
@@ -94,14 +89,7 @@ export default function App() {
             blurb="Talk to your coach — it updates your program and training files as you chat."
           />
         )}
-        {tab === 'progress' && (
-          <Placeholder
-            icon={<TrendingIcon />}
-            title="Progress"
-            badge="COMING IN W3/W5"
-            blurb="Session history and progress photos with coach vision feedback."
-          />
-        )}
+        {tab === 'progress' && <ProgressPane />}
         {tab === 'more' &&
           (showSettings ? (
             <SettingsPane />
