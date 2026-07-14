@@ -7,6 +7,7 @@ import {
   MoreIcon,
 } from './components/icons';
 import { Placeholder } from './panes/Placeholder';
+import { WeekPane } from './panes/WeekPane';
 import { MorePane } from './panes/MorePane';
 import { SettingsPane } from './panes/SettingsPane';
 import { refreshAll } from './services/driveSync';
@@ -76,14 +77,7 @@ export default function App() {
           <h1 className="pane__title">{headerTitle}</h1>
         </div>
 
-        {tab === 'week' && (
-          <Placeholder
-            icon={<CalendarIcon />}
-            title="Weekly program"
-            badge="COMING IN W2"
-            blurb="Your adaptive Push / Pull / Full-Body week, generated and amended by the coach."
-          />
-        )}
+        {tab === 'week' && <WeekPane />}
         {tab === 'today' && (
           <Placeholder
             icon={<DumbbellIcon />}

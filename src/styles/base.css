@@ -360,3 +360,302 @@ a {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* ── Week pane ──────────────────────────────────────────────── */
+
+.week-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-md);
+  margin-bottom: var(--sp-md);
+}
+
+.week-head__range {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.week-head__sub {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.week-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+}
+
+.daycard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-md);
+  color: var(--text);
+}
+
+.daycard--today {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+.daycard--empty {
+  opacity: 0.6;
+}
+
+.daycard:not(:disabled):active {
+  background: var(--surface-2);
+}
+
+.daycard__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm);
+}
+
+.daycard__weekday {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-secondary);
+  letter-spacing: 0.03em;
+}
+
+.daycard__title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.daycard__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+/* ── Chips ──────────────────────────────────────────────────── */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--r-round);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.chip--push,
+.chip--upper {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+.chip--pull {
+  background: rgba(90, 155, 255, 0.16);
+  color: #7aa9ff;
+}
+.chip--fullbody {
+  background: var(--success-muted);
+  color: var(--success);
+}
+.chip--legs {
+  background: rgba(178, 130, 255, 0.16);
+  color: #b282ff;
+}
+.chip--cardio {
+  background: rgba(0, 200, 200, 0.15);
+  color: #3fd0c8;
+}
+.chip--rest {
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
+.chip--status-done {
+  background: var(--success-muted);
+  color: var(--success);
+}
+.chip--status-amended {
+  background: var(--warning-muted);
+  color: var(--warning);
+}
+.chip--status-skipped {
+  background: var(--danger-muted);
+  color: var(--danger);
+}
+.chip--status-planned {
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
+/* ── Banners ────────────────────────────────────────────────── */
+
+.banner {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px var(--sp-md);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-md);
+}
+
+.banner--warning {
+  border-color: var(--warning);
+  background: var(--warning-muted);
+  color: var(--warning);
+}
+
+.banner--error {
+  border-color: var(--danger);
+  background: var(--danger-muted);
+  color: var(--danger);
+}
+
+/* ── Generating state ───────────────────────────────────────── */
+
+.generating {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--sp-sm);
+  padding: var(--sp-xl) var(--sp-lg);
+  min-height: 40vh;
+  justify-content: center;
+}
+
+.generating__msg {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.generating__hint {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid var(--surface-3);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+  margin-bottom: var(--sp-sm);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Day detail / slideover ─────────────────────────────────── */
+
+.slideover__header {
+  padding-bottom: var(--sp-sm);
+}
+
+.daydetail__title-row {
+  display: flex;
+  gap: var(--sp-sm);
+  margin-bottom: var(--sp-sm);
+}
+
+.daydetail__title {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+}
+
+.daydetail__rest {
+  padding: var(--sp-lg);
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.coachnote {
+  background: var(--accent-glow);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  padding: 10px var(--sp-md);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin: var(--sp-md) 0;
+}
+
+/* ── Exercise list ──────────────────────────────────────────── */
+
+.exlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+  margin-top: var(--sp-md);
+}
+
+.exrow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-sm);
+}
+
+.ex-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.ex-thumb--fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
+.ex-thumb--fallback svg {
+  width: 26px;
+  height: 26px;
+}
+
+.exrow__body {
+  min-width: 0;
+  flex: 1;
+}
+
+.exrow__name {
+  font-weight: 600;
+  font-size: var(--fs-md);
+}
+
+.exrow__meta {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.exrow__notes {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
