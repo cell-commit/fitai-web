@@ -84,7 +84,14 @@ export function WeekPane() {
 
   if (selectedDay) {
     return (
-      <DayDetail day={selectedDay} onClose={() => setSelectedDate(null)} />
+      <DayDetail
+        day={selectedDay}
+        onClose={() => {
+          setSelectedDate(null);
+          void refresh();
+        }}
+        onSessionComplete={() => void refresh()}
+      />
     );
   }
 

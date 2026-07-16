@@ -40,6 +40,18 @@ const FOCUS_TITLES: Record<DayFocus, string> = {
   rest: 'Rest',
 };
 
+const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_SHORT = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/** "Wed 15 Jul" for an ISO date (local noon to dodge TZ edges). */
+export function formatPlannedDay(date: string): string {
+  const d = new Date(`${date}T12:00:00`);
+  return `${WEEKDAY_SHORT[d.getDay()]} ${d.getDate()} ${MONTH_SHORT[d.getMonth()]}`;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Set formatting — shared by the markdown renderer and the Today
 // pane's "last time" line so both read identically.
@@ -103,10 +115,17 @@ function exerciseLine(ex: LoggedExercise): string | null {
  */
 export function renderSessionMarkdown(
   log: SessionLog,
-  checkIn?: CheckIn
+  checkIn?: CheckIn,
+  opts?: { plannedDate?: string }
 ): string {
   const lines: string[] = [];
-  lines.push(`## ${log.date} — ${FOCUS_TITLES[log.focus] ?? log.focus}`);
+  let heading = `## ${log.date} — ${FOCUS_TITLES[log.focus] ?? log.focus}`;
+  // When the session was performed on a day other than the one it was planned
+  // for, note the planned day so the history log stays unambiguous.
+  if (opts?.plannedDate && opts.plannedDate !== log.date) {
+    heading += ` (planned ${formatPlannedDay(opts.plannedDate)})`;
+  }
+  lines.push(heading);
   lines.push('');
 
   if (checkIn) {
@@ -140,6 +159,7 @@ export function renderSessionMarkdown(
 const DRAFT_KEY = '@fitai/session_draft';
 
 export interface SessionDraft {
+  /** The program day this draft belongs to (YYYY-MM-DD) — the draft's key. */
   date: string;
   focus: DayFocus;
   startedAt: number;
@@ -147,29 +167,87 @@ export interface SessionDraft {
   feedback: string;
 }
 
+// Drafts are stored as a map keyed by program-day date, so a session started
+// from Wednesday's plan and today's own session live in separate slots and
+// can't clobber each other (design: launch a workout from any day in Week).
+type DraftMap = Record<string, SessionDraft>;
+
+async function readDraftMap(): Promise<DraftMap> {
+  try {
+    const data = await kv.getItem(DRAFT_KEY);
+    if (!data) return {};
+    const parsed = JSON.parse(data) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    // Legacy migration: an earlier single-draft build stored a bare
+    // SessionDraft object. Detect it by its own shape and wrap it by date.
+    const maybe = parsed as SessionDraft;
+    if (Array.isArray(maybe.exercises) && typeof maybe.date === 'string') {
+      return { [maybe.date]: maybe };
+    }
+    return parsed as DraftMap;
+  } catch {
+    return {};
+  }
+}
+
+async function writeDraftMap(map: DraftMap): Promise<void> {
+  await kv.setItem(DRAFT_KEY, JSON.stringify(map));
+}
+
+function hasLoggedSet(draft: SessionDraft): boolean {
+  return draft.exercises.some((ex) => ex.sets.some((s) => s.reps > 0));
+}
+
 export async function getSessionDraft(
   date: string
 ): Promise<SessionDraft | null> {
-  try {
-    const data = await kv.getItem(DRAFT_KEY);
-    if (!data) return null;
-    const draft = JSON.parse(data) as SessionDraft;
-    return draft.date === date ? draft : null;
-  } catch {
-    return null;
-  }
+  const map = await readDraftMap();
+  return map[date] ?? null;
 }
 
 export async function saveSessionDraft(draft: SessionDraft): Promise<void> {
-  await kv.setItem(DRAFT_KEY, JSON.stringify(draft));
+  const map = await readDraftMap();
+  map[draft.date] = draft;
+  await writeDraftMap(map);
 }
 
+/** Clear one program day's draft (or every draft when no date is given). */
 export async function clearSessionDraft(date?: string): Promise<void> {
-  if (date) {
-    const existing = await getSessionDraft(date);
-    if (!existing) return; // don't clobber a draft for a different day
+  if (!date) {
+    await kv.removeItem(DRAFT_KEY);
+    return;
   }
-  await kv.removeItem(DRAFT_KEY);
+  const map = await readDraftMap();
+  if (map[date]) {
+    delete map[date];
+    await writeDraftMap(map);
+  }
+}
+
+/**
+ * In-progress drafts (at least one logged set) for program days other than
+ * `exceptDate`. Used to warn before starting a workout from a different day.
+ */
+export async function otherDraftsInProgress(
+  exceptDate: string
+): Promise<SessionDraft[]> {
+  const map = await readDraftMap();
+  return Object.values(map).filter(
+    (d) => d.date !== exceptDate && hasLoggedSet(d)
+  );
+}
+
+/** Drop every draft except the given program day's. */
+export async function clearOtherDrafts(exceptDate: string): Promise<void> {
+  const map = await readDraftMap();
+  let changed = false;
+  for (const key of Object.keys(map)) {
+    if (key !== exceptDate) {
+      delete map[key];
+      changed = true;
+    }
+  }
+  if (changed) await writeDraftMap(map);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -204,28 +282,47 @@ export interface CompleteSessionResult {
  *   4. if feedback is non-empty, amendProgram(feedback) inside try/catch.
  * Finally the in-progress draft for that day is cleared.
  */
+export interface CompleteSessionOptions {
+  /**
+   * The program day this session fulfilled, when it differs from the log date
+   * (a workout launched from a non-today day in the Week view). The log is
+   * stamped with the actual date it was performed, but THIS program day is the
+   * one flipped to 'done' and its draft is the one cleared.
+   */
+  programDate?: string;
+}
+
 export async function completeSession(
   log: SessionLog,
-  checkIn?: CheckIn
+  checkIn?: CheckIn,
+  opts?: CompleteSessionOptions
 ): Promise<CompleteSessionResult> {
   const configured = await isConfigured();
+
+  // The program day being fulfilled (defaults to the log's own date).
+  const programDate = opts?.programDate ?? log.date;
 
   const completed: SessionLog = {
     ...log,
     completedAt: log.completedAt ?? Date.now(),
     syncedToDrive: configured,
+    // Only stamp programDate when it genuinely differs, so same-day logs stay
+    // byte-identical to the original single-day flow.
+    programDate: programDate !== log.date ? programDate : log.programDate,
   };
 
-  const markdown = renderSessionMarkdown(completed, checkIn);
+  const markdown = renderSessionMarkdown(completed, checkIn, {
+    plannedDate: programDate,
+  });
 
   // 1. Persist first — the log must survive everything below.
   await saveSessionLog(completed);
 
-  // 2. Mark the matching program day done.
+  // 2. Mark the fulfilled program day done.
   let dayMarked = false;
   const program = await getWeeklyProgram();
   if (program) {
-    const idx = program.days.findIndex((d) => d.date === completed.date);
+    const idx = program.days.findIndex((d) => d.date === programDate);
     if (idx >= 0 && program.days[idx].status !== 'done') {
       const days = [...program.days];
       days[idx] = { ...days[idx], status: 'done' };
@@ -258,7 +355,7 @@ export async function completeSession(
     }
   }
 
-  await clearSessionDraft(completed.date);
+  await clearSessionDraft(programDate);
 
   return {
     log: completed,

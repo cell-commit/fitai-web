@@ -114,6 +114,7 @@ export interface LoggedExercise {
 
 export interface SessionLog {
   id: string;
+  /** Actual calendar date the session was performed (YYYY-MM-DD). */
   date: string;
   focus: DayFocus;
   exercises: LoggedExercise[];
@@ -121,6 +122,12 @@ export interface SessionLog {
   completedAt?: number;
   feedback?: string;
   syncedToDrive: boolean;
+  /**
+   * The program day this session fulfilled, when it differs from `date` — e.g.
+   * performing Wednesday's planned "Pull" on Thursday. Absent when the session
+   * was performed on its own planned day (the common case).
+   */
+  programDate?: string;
 }
 
 // Chat

@@ -21,6 +21,8 @@ import {
   getSessionDraft,
   saveSessionDraft,
   clearSessionDraft,
+  otherDraftsInProgress,
+  clearOtherDrafts,
   type SessionDraft,
 } from '../sessionLog';
 import {
@@ -136,6 +138,26 @@ describe('renderSessionMarkdown', () => {
       '## 2026-07-14 — Push\n\n- Leg Press — 12 @ 40kg (target 3×12-15)'
     );
   });
+
+  it('notes the planned day in the heading when it differs from the log date', () => {
+    const md = renderSessionMarkdown(
+      fixtureLog({ date: '2026-07-16', feedback: undefined }),
+      undefined,
+      { plannedDate: '2026-07-15' }
+    );
+    // Log stamped with the actual performance date; heading flags the plan day.
+    expect(md).toMatch(/^## 2026-07-16 — Push \(planned \w{3} 15 Jul\)/);
+  });
+
+  it('omits the planned note when the planned day equals the log date', () => {
+    const md = renderSessionMarkdown(
+      fixtureLog({ date: '2026-07-16', feedback: undefined }),
+      undefined,
+      { plannedDate: '2026-07-16' }
+    );
+    expect(md).toContain('## 2026-07-16 — Push\n');
+    expect(md).not.toContain('(planned');
+  });
 });
 
 // ── set formatting helpers ────────────────────────────────────
@@ -203,6 +225,55 @@ describe('session draft persistence', () => {
     expect(await getSessionDraft('2026-07-14')).toEqual(draft);
     await clearSessionDraft('2026-07-14');
     expect(await getSessionDraft('2026-07-14')).toBeNull();
+  });
+});
+
+describe('session draft keying by program day', () => {
+  function draft(date: string, focus: SessionDraft['focus'], reps = 0): SessionDraft {
+    return {
+      date,
+      focus,
+      startedAt: 1,
+      feedback: '',
+      exercises: [
+        {
+          name: 'Bench Press',
+          targetSets: 3,
+          targetRepRange: '8-10',
+          sets: [{ reps, weightKg: 60 }],
+        },
+      ],
+    };
+  }
+
+  it('keeps drafts for different program days independent (no clobber)', async () => {
+    const wed = draft('2026-07-15', 'pull', 10);
+    const today = draft('2026-07-16', 'push', 8);
+
+    await saveSessionDraft(wed);
+    await saveSessionDraft(today); // must NOT overwrite Wednesday's slot
+
+    expect(await getSessionDraft('2026-07-15')).toEqual(wed);
+    expect(await getSessionDraft('2026-07-16')).toEqual(today);
+
+    // Clearing one leaves the other intact.
+    await clearSessionDraft('2026-07-16');
+    expect(await getSessionDraft('2026-07-16')).toBeNull();
+    expect(await getSessionDraft('2026-07-15')).toEqual(wed);
+  });
+
+  it('reports in-progress drafts for other days and can clear them (start guard)', async () => {
+    await saveSessionDraft(draft('2026-07-15', 'pull', 10)); // has a logged set
+    await saveSessionDraft(draft('2026-07-17', 'legs', 0)); // no logged set yet
+    await saveSessionDraft(draft('2026-07-16', 'push', 8)); // the one being started
+
+    const others = await otherDraftsInProgress('2026-07-16');
+    expect(others.map((d) => d.date)).toEqual(['2026-07-15']);
+
+    await clearOtherDrafts('2026-07-16');
+    expect(await getSessionDraft('2026-07-15')).toBeNull();
+    expect(await getSessionDraft('2026-07-17')).toBeNull();
+    expect(await getSessionDraft('2026-07-16')).not.toBeNull();
   });
 });
 
@@ -303,6 +374,67 @@ describe('completeSession', () => {
     });
     await completeSession(fixtureLog());
     expect(await getSessionDraft('2026-07-14')).toBeNull();
+  });
+
+  it('marks the fulfilled (non-today) program day done, stamped with today', async () => {
+    // Program has a Wednesday "Pull" (2026-07-15); the session is performed today
+    // (2026-07-16) but launched from Wednesday's plan.
+    const program: WeeklyProgram = {
+      weekStart: '2026-07-13',
+      generatedAt: 1,
+      revision: 1,
+      days: [
+        {
+          date: '2026-07-15',
+          focus: 'pull',
+          title: 'Pull',
+          status: 'planned',
+          exercises: [{ name: 'Lat Pulldown', sets: 3, repRange: '10-12' }],
+        },
+        {
+          date: '2026-07-16',
+          focus: 'push',
+          title: 'Push',
+          status: 'planned',
+          exercises: [{ name: 'Bench Press', sets: 3, repRange: '8-10' }],
+        },
+      ],
+    };
+    await saveWeeklyProgram(program);
+
+    // A stale draft for Wednesday should be cleared by finishing it.
+    await saveSessionDraft({
+      date: '2026-07-15',
+      focus: 'pull',
+      startedAt: 1,
+      feedback: '',
+      exercises: [],
+    });
+
+    const res = await completeSession(
+      fixtureLog({ id: 'wed-sess', date: '2026-07-16', focus: 'pull' }),
+      undefined,
+      { programDate: '2026-07-15' }
+    );
+
+    // The Wednesday program day is the one flipped to done — not today's Push.
+    const prog = await getWeeklyProgram();
+    expect(prog?.days.find((d) => d.date === '2026-07-15')?.status).toBe('done');
+    expect(prog?.days.find((d) => d.date === '2026-07-16')?.status).toBe('planned');
+    expect(res.dayMarked).toBe(true);
+
+    // The log carries the actual performance date + a programDate back-reference.
+    const logs = await listSessionLogs();
+    const saved = logs.find((l) => l.id === 'wed-sess');
+    expect(saved?.date).toBe('2026-07-16');
+    expect(saved?.programDate).toBe('2026-07-15');
+
+    // History markdown notes the planned day.
+    const arg = queueWriteMock.mock.calls[0][0];
+    expect(arg.content).toMatch(/^## 2026-07-16 — Pull \(planned \w{3} 15 Jul\)/);
+
+    // Only Wednesday's draft is cleared.
+    expect(await getSessionDraft('2026-07-15')).toBeNull();
   });
 });
 

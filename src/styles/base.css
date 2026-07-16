@@ -662,8 +662,9 @@ a {
 
 /* ── Today pane ─────────────────────────────────────────────── */
 
-.pane--session {
-  /* Leave room for the sticky finish footer + tab bar. */
+.pane--session,
+.pane--with-cta {
+  /* Leave room for the sticky finish / start footer + tab bar. */
   padding-bottom: calc(var(--tabbar-height) + var(--safe-bottom) + 96px);
 }
 
