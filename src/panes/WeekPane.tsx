@@ -12,8 +12,10 @@ import {
 } from '../services/program';
 import { getTodayDate } from '../utils/date';
 import { DayDetail } from './DayDetail';
+import { ProposedWeekPreview } from './ProposedWeekPreview';
 import { FOCUS_LABELS, WEEKDAYS } from './focus';
 import { CalendarIcon } from '../components/icons';
+import { ClampText } from '../components/ClampText';
 
 const GENERATING_MESSAGES = [
   'Reading your training status…',
@@ -140,6 +142,7 @@ export function WeekPane() {
       {pending && (
         <PendingBanner
           pending={pending}
+          active={program}
           busy={pendingBusy}
           onApprove={handleApprove}
           onDiscard={handleDiscard}
@@ -213,6 +216,12 @@ export function WeekPane() {
         </div>
       )}
 
+      {!loading && program && pending && (
+        <div className="week-section-label">
+          Current plan — unchanged until you approve
+        </div>
+      )}
+
       {!loading && program && (
         <div className="week-grid">
           {weekDates(program.weekStart).map((date, i) => {
@@ -242,15 +251,29 @@ const SOURCE_LABEL: Record<PendingProgram['source'], string> = {
   coach: 'Change proposed by the coach',
 };
 
+/** One line of concern copy: "issue — suggestion". */
+function concernText(c: { issue: string; suggestion?: string }): string {
+  return `${c.issue}${c.suggestion ? ` — ${c.suggestion}` : ''}`;
+}
+
 interface PendingBannerProps {
   pending: PendingProgram;
+  /** The active week, so the preview can mark days that would change. */
+  active: WeeklyProgram | null;
   busy: boolean;
   onApprove: () => void;
   onDiscard: () => void;
 }
 
-function PendingBanner({ pending, busy, onApprove, onDiscard }: PendingBannerProps) {
+export function PendingBanner({
+  pending,
+  active,
+  busy,
+  onApprove,
+  onDiscard,
+}: PendingBannerProps) {
   const [showAll, setShowAll] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   const review = 'status' in pending.review ? null : pending.review;
   const unreviewed = review === null;
   const concerns = review?.concerns ?? [];
@@ -283,10 +306,10 @@ function PendingBanner({ pending, busy, onApprove, onDiscard }: PendingBannerPro
               <span className="pending__sev">
                 {c.severity === 'must_fix' ? 'Must fix' : 'Caution'}
               </span>
-              <span>
-                {c.issue}
-                {c.suggestion ? ` — ${c.suggestion}` : ''}
-              </span>
+              <ClampText
+                text={concernText(c)}
+                className="pending__concern-text"
+              />
             </li>
           ))}
           {hidden > 0 && (
@@ -298,6 +321,20 @@ function PendingBanner({ pending, busy, onApprove, onDiscard }: PendingBannerPro
           )}
         </ul>
       )}
+
+      <div className="pending__preview">
+        <button
+          type="button"
+          className="pending__more"
+          aria-expanded={showPreview}
+          onClick={() => setShowPreview((v) => !v)}
+        >
+          {showPreview ? 'Hide proposed week' : 'View proposed week'}
+        </button>
+        {showPreview && (
+          <ProposedWeekPreview program={pending.program} active={active} />
+        )}
+      </div>
 
       <div className="pending__actions">
         <button className="btn" onClick={onApprove} disabled={busy}>

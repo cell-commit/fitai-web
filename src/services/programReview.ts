@@ -361,15 +361,19 @@ Judgement rules:
 - A jump to injury-risk volume for a muscle group, or programming that directly loads an area flagged in training-status, is a MUST_FIX.
 - Milder issues (slightly high volume, thin warm-up, imbalance, questionable exercise choice) are CAUTIONs.
 - approved must be false if there is any must_fix concern.
-- summary is ONE plain-language line Jason will read.`;
 
-const REVIEW_SCHEMA: Record<string, unknown> = {
+OUTPUT STYLE (strict — Jason reads this on a phone, inside an approval card):
+- summary: ONE sentence, ≤ 20 words, plain language.
+- Each concern: issue ≤ 15 words, suggestion ≤ 15 words. Telegraphic — no full sentences of reasoning, no restating the numbers.
+- Verdict only. Your long-form reasoning is NOT wanted anywhere in the output.`;
+
+export const REVIEW_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
     approved: { type: 'boolean' },
     summary: {
       type: 'string',
-      description: 'One-line, user-facing summary of the review.',
+      description: 'One sentence, ≤ 20 words, user-facing summary of the review.',
     },
     concerns: {
       type: 'array',
@@ -377,8 +381,14 @@ const REVIEW_SCHEMA: Record<string, unknown> = {
         type: 'object',
         properties: {
           severity: { type: 'string', enum: ['must_fix', 'caution'] },
-          issue: { type: 'string' },
-          suggestion: { type: 'string' },
+          issue: {
+            type: 'string',
+            description: '≤ 15 words, telegraphic — what is wrong.',
+          },
+          suggestion: {
+            type: 'string',
+            description: '≤ 15 words, telegraphic — the concrete fix.',
+          },
         },
         required: ['severity', 'issue', 'suggestion'],
         additionalProperties: false,

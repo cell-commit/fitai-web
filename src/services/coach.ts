@@ -56,11 +56,12 @@ const HISTORY_LIMIT = 30;
 // Tool definitions
 // ─────────────────────────────────────────────────────────────
 
-const COACH_TOOLS: ClaudeTool[] = [
+/** Exported for tests (copy-limit regression guard); not used elsewhere. */
+export const COACH_TOOLS: ClaudeTool[] = [
   {
     name: 'update_weekly_program',
     description:
-      "Replace Jason's weekly program with a full 7-day week (Monday→Sunday, correct ISO dates, matching the current weekStart). Use when the actual plan changes. Days already marked 'done' are preserved automatically — copy them back unchanged. Use conventional gym exercise names so the app can match images.",
+      "Replace Jason's weekly program with a full 7-day week (Monday→Sunday, correct ISO dates, matching the current weekStart). Use when the actual plan changes. Days already marked 'done' are preserved automatically — copy them back unchanged. Use conventional gym exercise names so the app can match images. Keep plan copy terse — it is read on a phone mid-workout: day title ≤ 4 words with no parentheticals, coachNotes ≤ 30 words as an imperative cue, exercise notes ≤ 12 words. Your reasoning and caveats belong in your chat reply, never in the plan.",
     strict: true,
     input_schema: {
       type: 'object',

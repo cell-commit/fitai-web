@@ -14,6 +14,7 @@ import {
   discardPendingProgram,
   validateModelProgram,
   programStateFor,
+  dayContentChanged,
   weekDates,
   weekRangeLabel,
 } from '../program';
@@ -29,6 +30,7 @@ import {
 import type { ClaudeResponse } from '../claude';
 import type {
   WeeklyProgram,
+  ProgramDay,
   DayFocus,
   PendingProgram,
   ReviewVerdict,
@@ -173,6 +175,14 @@ describe('generateWeeklyProgram', () => {
     expect(body.output_config.format.type).toBe('json_schema');
     expect(body.thinking.type).toBe('adaptive');
 
+    // Plan copy must stay phone-readable: the style block rides in both the
+    // cached system prefix (shared by amend/revision) and the user turn.
+    const systemText = (body.system as Array<{ text: string }>)
+      .map((s) => s.text)
+      .join('\n');
+    expect(systemText).toContain('PLAN COPY STYLE');
+    expect(body.messages[0].content).toContain('PLAN COPY STYLE');
+
     // Nothing was applied — the active week is still empty, the proposal is pending.
     expect(await getWeeklyProgram()).toBeNull();
     expect(await getPendingProgram()).not.toBeNull();
@@ -267,6 +277,8 @@ describe('amendProgram', () => {
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     const userText = body.messages[0].content as string;
     expect(userText).toContain('Do NOT change days that are already done');
+    // …as were the plan-copy limits.
+    expect(userText).toContain('PLAN COPY STYLE');
   });
 
   it('throws when there is no current program', async () => {
@@ -366,6 +378,73 @@ describe('approve / discard pending', () => {
 
   it('approvePendingProgram is a no-op returning null when nothing is pending', async () => {
     expect(await approvePendingProgram()).toBeNull();
+  });
+});
+
+// ── changed-day compare (drives the pending-preview markers) ──
+
+describe('dayContentChanged', () => {
+  function pd(
+    title: string,
+    exercises: Array<{ name: string; sets?: number; repRange?: string }>
+  ): ProgramDay {
+    return {
+      date: DATES[0],
+      focus: 'push',
+      title,
+      status: 'planned',
+      exercises: exercises.map((e) => ({
+        name: e.name,
+        sets: e.sets ?? 3,
+        repRange: e.repRange ?? '8-10',
+      })),
+    };
+  }
+
+  const base = pd('Push', [{ name: 'Bench' }, { name: 'Lateral Raise' }]);
+
+  it('is false for identical days', () => {
+    expect(
+      dayContentChanged(base, pd('Push', [{ name: 'Bench' }, { name: 'Lateral Raise' }]))
+    ).toBe(false);
+  });
+
+  it('ignores title whitespace and case', () => {
+    expect(
+      dayContentChanged(pd('  push  ', [{ name: 'Bench' }]), pd('Push', [{ name: 'Bench' }]))
+    ).toBe(false);
+  });
+
+  it('is true when the title changes', () => {
+    expect(
+      dayContentChanged(pd('Light Push', [{ name: 'Bench' }]), pd('Push', [{ name: 'Bench' }]))
+    ).toBe(true);
+  });
+
+  it('is true when an exercise name, sets or repRange changes', () => {
+    expect(
+      dayContentChanged(pd('Push', [{ name: 'Dip' }]), pd('Push', [{ name: 'Bench' }]))
+    ).toBe(true);
+    expect(
+      dayContentChanged(pd('Push', [{ name: 'Bench', sets: 4 }]), pd('Push', [{ name: 'Bench' }]))
+    ).toBe(true);
+    expect(
+      dayContentChanged(
+        pd('Push', [{ name: 'Bench', repRange: '5-6' }]),
+        pd('Push', [{ name: 'Bench' }])
+      )
+    ).toBe(true);
+  });
+
+  it('is true when an exercise is added or removed', () => {
+    expect(dayContentChanged(base, pd('Push', [{ name: 'Bench' }]))).toBe(true);
+    expect(dayContentChanged(pd('Push', [{ name: 'Bench' }]), base)).toBe(true);
+  });
+
+  it('handles a day present on only one side, and two absent days', () => {
+    expect(dayContentChanged(base, null)).toBe(true);
+    expect(dayContentChanged(undefined, base)).toBe(true);
+    expect(dayContentChanged(null, undefined)).toBe(false);
   });
 });
 

@@ -9,6 +9,7 @@ import {
 import { programStateFor } from '../services/program';
 import { SessionRunner, SessionSummary } from '../components/SessionRunner';
 import { CalendarIcon } from '../components/icons';
+import { ClampText } from '../components/ClampText';
 import { FOCUS_LABELS } from './focus';
 
 interface TodayPaneProps {
@@ -124,7 +125,7 @@ export function TodayPane({ onGoToWeek }: TodayPaneProps) {
           <div className="placeholder__title">Rest day</div>
           {day.coachNotes ? (
             <div className="coachnote" style={{ textAlign: 'left', maxWidth: 420 }}>
-              {day.coachNotes}
+              <ClampText text={day.coachNotes} />
             </div>
           ) : (
             <p>Recover well — mobility, a walk, and good sleep.</p>

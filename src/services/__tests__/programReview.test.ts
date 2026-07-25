@@ -238,6 +238,15 @@ describe('reviewAndStage', () => {
     expect(pending.revisedByReviewer).toBe(false);
     expect('approved' in pending.review && pending.review.approved).toBe(true);
     expect(await getPendingProgram()).not.toBeNull();
+
+    // The reviewer is asked for a terse verdict, not long-form reasoning: the
+    // concerns render inside a phone-sized approval card.
+    const userText = JSON.parse(mockFetch.mock.calls[0][1].body).messages[0]
+      .content as string;
+    expect(userText).toContain('OUTPUT STYLE');
+    expect(userText).toMatch(/summary: ONE sentence, ≤ 20 words/);
+    expect(userText).toMatch(/issue ≤ 15 words, suggestion ≤ 15 words/);
+    expect(userText).toMatch(/long-form reasoning is NOT wanted/i);
   });
 
   it('must_fix → runs the revision pass exactly once and re-reviews the result', async () => {

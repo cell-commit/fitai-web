@@ -74,7 +74,8 @@ export const PROGRAM_SCHEMA: Record<string, unknown> = {
     weekStart: { type: 'string', description: 'Monday of the week, YYYY-MM-DD' },
     rationale: {
       type: ['string', 'null'],
-      description: 'Short note on how the week reflects status/recent sessions',
+      description:
+        'One sentence, ≤ 20 words, on how the week reflects status/recent sessions',
     },
     days: {
       type: 'array',
@@ -84,8 +85,15 @@ export const PROGRAM_SCHEMA: Record<string, unknown> = {
         properties: {
           date: { type: 'string', description: 'YYYY-MM-DD' },
           focus: { type: 'string', enum: DAY_FOCI },
-          title: { type: 'string' },
-          coachNotes: { type: ['string', 'null'] },
+          title: {
+            type: 'string',
+            description:
+              '≤ 4 words, no parentheticals — nuance goes in coachNotes',
+          },
+          coachNotes: {
+            type: ['string', 'null'],
+            description: '≤ 30 words, imperative coaching cue',
+          },
           exercises: {
             type: 'array',
             items: {
@@ -98,7 +106,10 @@ export const PROGRAM_SCHEMA: Record<string, unknown> = {
                 sets: { type: 'number' },
                 repRange: { type: 'string', description: 'e.g. "8-10"' },
                 targetWeight: { type: ['string', 'null'] },
-                notes: { type: ['string', 'null'] },
+                notes: {
+                  type: ['string', 'null'],
+                  description: '≤ 12 words, cue only',
+                },
               },
               required: ['name', 'sets', 'repRange', 'targetWeight', 'notes'],
               additionalProperties: false,
@@ -158,6 +169,19 @@ export function validateModelProgram(data: unknown): ModelProgram {
 // ─────────────────────────────────────────────────────────────
 
 const PERSONA = `You are Jason's personal strength & conditioning coach inside his training app. You are proactive and lead the plan rather than just reacting — you make the call, explain it briefly, and honour his canonical training files as the source of truth.`;
+
+/**
+ * Style rules for everything that lands IN the plan (day titles, coach notes,
+ * exercise notes, rationale). Shared by generate / amend / reviewer-revision so
+ * one edit changes all three. Jason reads this text on a phone mid-workout —
+ * long prose there is unreadable; explanation belongs in the chat reply.
+ */
+export const PLAN_STYLE_RULES = `PLAN COPY STYLE (strict — this text is read on a phone mid-workout, so it must be scannable in one glance):
+- Day title: ≤ 4 words, no parentheticals, no explanation (e.g. "Push", "Light Pull", "Easy Cardio"). Never put reasons or caveats in the title.
+- coachNotes: ≤ 30 words, an imperative coaching cue ("Stop 2 reps short on presses; skip if the shoulder bites."). Not an essay, not a rationale.
+- Exercise notes: ≤ 12 words, cue only ("elbows tucked", "slow eccentric").
+- rationale: one sentence, ≤ 20 words.
+- Anything longer — reasoning, caveats, background — goes in your chat reply to Jason, never in the plan.`;
 
 const DEFAULT_CONTEXT = `No training files are connected yet. Assume a healthy intermediate lifter on a 3-day split — Monday Push, Wednesday Pull, Friday Full Body — with Thursday and Sunday easy cardio, and Tuesday/Saturday rest. Use conventional, safe programming until real training files are connected.`;
 
@@ -222,7 +246,7 @@ function buildSystem(ctx: ProgramContext) {
   const system = [
     {
       type: 'text' as const,
-      text: `${PERSONA}${rules}\n\nWhen you design a week, honour the current training split from the status file unless the status itself dictates a change (injury flare, deload, etc.). Use conventional gym exercise names (no invented names) so the app can match exercise images. Produce exactly 7 days, Monday through Sunday.`,
+      text: `${PERSONA}${rules}\n\nWhen you design a week, honour the current training split from the status file unless the status itself dictates a change (injury flare, deload, etc.). Use conventional gym exercise names (no invented names) so the app can match exercise images. Produce exactly 7 days, Monday through Sunday.\n\n${PLAN_STYLE_RULES}`,
       cache_control: { type: 'ephemeral' as const },
     },
     {
@@ -285,6 +309,25 @@ function exercisesEqual(a: ProgramExercise[], b: ProgramExercise[]): boolean {
       ex.name === o.name && ex.sets === o.sets && ex.repRange === o.repRange
     );
   });
+}
+
+/**
+ * PURE. True when a proposed day's user-visible content differs from the day on
+ * the same date in the active week — used to mark "changed" days in the pending
+ * proposal preview. Compares the title (trimmed, case-insensitive) and each
+ * exercise's name / sets / repRange, i.e. exactly what a reader would notice.
+ * A day that exists on only one side counts as changed; two absent days do not.
+ */
+export function dayContentChanged(
+  proposed: ProgramDay | null | undefined,
+  active: ProgramDay | null | undefined
+): boolean {
+  if (!proposed && !active) return false;
+  if (!proposed || !active) return true;
+  if (proposed.title.trim().toLowerCase() !== active.title.trim().toLowerCase()) {
+    return true;
+  }
+  return !exercisesEqual(proposed.exercises, active.exercises);
 }
 
 /**
@@ -377,7 +420,9 @@ ${constraints.map((c) => `- ${c}`).join('\n')}
 
 Return the FULL corrected week (all 7 days, same dates, weekStart ${proposed.weekStart}). Change only what is needed to resolve every concern; keep everything else. Do NOT change days that are already done${
     doneDates.length ? ` (dates: ${doneDates.join(', ')})` : ''
-  } — copy them back exactly. Use conventional exercise names.`;
+  } — copy them back exactly. Use conventional exercise names.
+
+${PLAN_STYLE_RULES}`;
 
   const raw = await callClaudeStructured<ModelProgram>(
     coachOptions(system, userText),
@@ -458,7 +503,9 @@ export async function generateWeeklyProgram(): Promise<GenerateResult> {
 Recent sessions logged in the app:
 ${ctx.recentSessionsText}
 
-Output exactly 7 days, Monday (${ctx.weekStart}) through Sunday, with correct ISO dates. Honour the current split from the status file unless the status dictates otherwise. Rest/cardio days should have focus 'rest' or 'cardio' with few or no exercises. Set weekStart to ${ctx.weekStart}.`;
+Output exactly 7 days, Monday (${ctx.weekStart}) through Sunday, with correct ISO dates. Honour the current split from the status file unless the status dictates otherwise. Rest/cardio days should have focus 'rest' or 'cardio' with few or no exercises. Set weekStart to ${ctx.weekStart}.
+
+${PLAN_STYLE_RULES}`;
 
   const raw = await callClaudeStructured<ModelProgram>(
     coachOptions(system, userText),
@@ -523,7 +570,9 @@ Jason's feedback / request:
 
 Return the FULL replacement week (all 7 days, same dates, weekStart ${current.weekStart}). Do NOT change days that are already done${
     doneDates.length ? ` (dates: ${doneDates.join(', ')})` : ''
-  } — copy them back exactly. Adjust the remaining days to honour the feedback. Use conventional exercise names.`;
+  } — copy them back exactly. Adjust the remaining days to honour the feedback. Use conventional exercise names.
+
+${PLAN_STYLE_RULES}`;
 
   const raw = await callClaudeStructured<ModelProgram>(
     coachOptions(system, userText),

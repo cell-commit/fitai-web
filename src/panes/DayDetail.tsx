@@ -4,6 +4,7 @@ import { ExerciseImage } from '../components/ExerciseImage';
 import { SessionRunner, SessionSummary } from '../components/SessionRunner';
 import { ChevronRightIcon } from '../components/icons';
 import { Markdown } from '../components/Markdown';
+import { ClampText } from '../components/ClampText';
 import {
   formatDisplayDate,
   getTodayDate,
@@ -144,7 +145,9 @@ export function DayDetail({ day, onClose, onSessionComplete }: DayDetailProps) {
 
         {day.coachNotes && (
           <div className="coachnote">
-            <Markdown text={day.coachNotes} />
+            <ClampText text={day.coachNotes}>
+              <Markdown text={day.coachNotes} />
+            </ClampText>
           </div>
         )}
 

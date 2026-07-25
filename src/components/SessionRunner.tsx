@@ -29,6 +29,7 @@ import {
 import { ExerciseImage } from './ExerciseImage';
 import { ChevronRightIcon } from './icons';
 import { Markdown } from './Markdown';
+import { ClampText } from './ClampText';
 
 interface SessionRunnerProps {
   /** The program day to execute (today's, or any day launched from the Week view). */
@@ -276,7 +277,9 @@ export function SessionRunner({
 
         {programDay.coachNotes && (
           <div className="coachnote">
-            <Markdown text={programDay.coachNotes} />
+            <ClampText text={programDay.coachNotes}>
+              <Markdown text={programDay.coachNotes} />
+            </ClampText>
           </div>
         )}
 
