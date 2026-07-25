@@ -1169,6 +1169,76 @@ a {
   border-bottom-left-radius: var(--r-sm);
 }
 
+/* ── Rendered markdown (coach / nutrition text, coachnotes, notes) ─── */
+/* Block markdown manages its own vertical rhythm, so drop the pre-wrap
+   whitespace handling the plain-text bubbles rely on. */
+.md {
+  white-space: normal;
+}
+.md--inline {
+  display: inline;
+}
+.md-p {
+  margin: 0;
+}
+.md-p + .md-p,
+.md-p + .md-h,
+.md-h + .md-p,
+.md-ul,
+.md-ol {
+  margin-top: 0.5em;
+}
+.md-p + .md-ul,
+.md-p + .md-ol,
+.md-ul + .md-p,
+.md-ol + .md-p {
+  margin-top: 0.4em;
+}
+.md-h {
+  font-weight: 700;
+  margin: 0.5em 0 0.25em;
+}
+.md-h:first-child {
+  margin-top: 0;
+}
+.md-h1 {
+  font-size: 1.15em;
+}
+.md-h2,
+.md-h3 {
+  font-size: 1em;
+}
+.md-ul,
+.md-ol {
+  margin-bottom: 0;
+  padding-left: 1.25em;
+}
+.md-ul {
+  list-style: disc;
+}
+.md-ol {
+  list-style: decimal;
+}
+.md-ul li,
+.md-ol li {
+  margin: 0.15em 0;
+}
+.md-code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--surface-3);
+  border-radius: var(--r-sm);
+  padding: 0.05em 0.35em;
+  overflow-wrap: anywhere;
+}
+/* First/last children shouldn't add outer spacing inside a padded container. */
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+
 /* Tool-event chips under a coach bubble. */
 .tool-chips {
   display: flex;

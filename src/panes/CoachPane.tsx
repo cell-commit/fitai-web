@@ -8,6 +8,7 @@ import {
   type CoachContextStatus,
 } from '../services/coachContext';
 import { ChatIcon } from '../components/icons';
+import { Markdown } from '../components/Markdown';
 
 // Chip glyph + fallback label per tool.
 const TOOL_CHIP: Record<string, { icon: string; label: string }> = {
@@ -227,7 +228,7 @@ function Bubble({ message }: { message: ChatMessage }) {
   return (
     <div className={`bubble-row bubble-row--${isUser ? 'user' : 'coach'}`}>
       <div className={`bubble bubble--${isUser ? 'user' : 'coach'}`}>
-        {message.text}
+        {isUser ? message.text : <Markdown text={message.text} />}
       </div>
       {!isUser && message.toolEvents && message.toolEvents.length > 0 && (
         <div className="tool-chips">

@@ -28,6 +28,7 @@ import {
 } from '../services/sessionLog';
 import { ExerciseImage } from './ExerciseImage';
 import { ChevronRightIcon } from './icons';
+import { Markdown } from './Markdown';
 
 interface SessionRunnerProps {
   /** The program day to execute (today's, or any day launched from the Week view). */
@@ -274,7 +275,9 @@ export function SessionRunner({
         )}
 
         {programDay.coachNotes && (
-          <div className="coachnote">{programDay.coachNotes}</div>
+          <div className="coachnote">
+            <Markdown text={programDay.coachNotes} />
+          </div>
         )}
 
         <div className="exercise-cards">

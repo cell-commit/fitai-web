@@ -1,4 +1,13 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  beforeAll,
+  afterAll,
+  vi,
+  type Mock,
+} from 'vitest';
 import {
   generateWeeklyProgram,
   amendProgram,
@@ -16,6 +25,16 @@ import type { WeeklyProgram, DayFocus } from '../../types';
 
 const WEEK_START = getWeekStart('2026-07-13'); // a Monday
 const DATES = weekDates(WEEK_START);
+
+// Pin "today" inside the fixture week — generateWeeklyProgram derives the
+// week from the real clock, so without this the suite rots as time passes.
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-07-14T10:00:00'));
+});
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 function modelDay(
   date: string,

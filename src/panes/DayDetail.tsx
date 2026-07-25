@@ -3,6 +3,7 @@ import type { ProgramDay, SessionLog } from '../types';
 import { ExerciseImage } from '../components/ExerciseImage';
 import { SessionRunner, SessionSummary } from '../components/SessionRunner';
 import { ChevronRightIcon } from '../components/icons';
+import { Markdown } from '../components/Markdown';
 import {
   formatDisplayDate,
   getTodayDate,
@@ -141,7 +142,11 @@ export function DayDetail({ day, onClose, onSessionComplete }: DayDetailProps) {
         <h2 className="daydetail__title">{day.title}</h2>
         <p className="pane__subtitle">{formatDisplayDate(day.date)}</p>
 
-        {day.coachNotes && <div className="coachnote">{day.coachNotes}</div>}
+        {day.coachNotes && (
+          <div className="coachnote">
+            <Markdown text={day.coachNotes} />
+          </div>
+        )}
 
         {isRest && !hasExercises ? (
           <div className="daydetail__rest">
@@ -163,7 +168,11 @@ export function DayDetail({ day, onClose, onSessionComplete }: DayDetailProps) {
                     {ex.sets} × {ex.repRange}
                     {ex.targetWeight ? ` · ${ex.targetWeight}` : ''}
                   </div>
-                  {ex.notes && <div className="exrow__notes">{ex.notes}</div>}
+                  {ex.notes && (
+                    <div className="exrow__notes">
+                      <Markdown text={ex.notes} inline />
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
