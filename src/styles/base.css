@@ -664,8 +664,10 @@ a {
 
 .pane--session,
 .pane--with-cta {
-  /* Leave room for the sticky finish / start footer + tab bar. */
-  padding-bottom: calc(var(--tabbar-height) + var(--safe-bottom) + 96px);
+  /* The app shell already clears the tab bar; only the sticky footer's
+   * height is needed here, so scrolling stops just past the last card
+   * (native iOS rubber-band supplies the bounce). */
+  padding-bottom: 80px;
 }
 
 .today-head {
@@ -789,8 +791,9 @@ a {
 }
 
 .set-row {
+  /* Weight first and flexible (room for e.g. 112.5), reps stepper compact */
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 72px 22px;
+  grid-template-columns: 22px minmax(0, 1fr) auto 22px;
   align-items: center;
   gap: var(--sp-xs);
 }
@@ -848,8 +851,8 @@ a {
 }
 
 .stepper__input {
-  flex: 1;
-  min-width: 0;
+  width: 52px;
+  flex: none;
   height: 40px;
   text-align: center;
   background: var(--surface-2);

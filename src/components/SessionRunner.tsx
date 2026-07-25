@@ -548,8 +548,8 @@ function ExerciseCard({
       <div className="set-rows">
         <div className="set-row set-row--header">
           <span className="set-row__idx">Set</span>
-          <span className="set-row__reps-label">Reps</span>
           <span className="set-row__weight-label">Weight (kg)</span>
+          <span className="set-row__reps-label">Reps</span>
           <span className="set-row__remove-label" />
         </div>
         {ex.sets.map((set, i) => (
@@ -588,6 +588,18 @@ function SetRow({
     <div className={`set-row${done ? ' set-row--done' : ''}`}>
       <span className="set-row__idx">{index + 1}</span>
 
+      <input
+        className="input set-row__weight"
+        type="number"
+        inputMode="decimal"
+        min={0}
+        step="0.5"
+        value={set.weightKg === 0 ? '' : set.weightKg}
+        placeholder="0"
+        onChange={(e) => onChange({ weightKg: Math.max(0, Number(e.target.value) || 0) })}
+        aria-label={`Set ${index + 1} weight`}
+      />
+
       <div className="stepper">
         <button
           className="stepper__btn"
@@ -614,18 +626,6 @@ function SetRow({
           +
         </button>
       </div>
-
-      <input
-        className="input set-row__weight"
-        type="number"
-        inputMode="decimal"
-        min={0}
-        step="0.5"
-        value={set.weightKg === 0 ? '' : set.weightKg}
-        placeholder="0"
-        onChange={(e) => onChange({ weightKg: Math.max(0, Number(e.target.value) || 0) })}
-        aria-label={`Set ${index + 1} weight`}
-      />
 
       {onRemove ? (
         <button
