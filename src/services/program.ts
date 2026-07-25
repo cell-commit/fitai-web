@@ -14,16 +14,20 @@ import type {
   ProgramDay,
   ProgramExercise,
   DayFocus,
+  PendingProgram,
 } from '../types';
 import { MODELS, callClaudeStructured, type CallClaudeOptions } from './claude';
 import {
   getWeeklyProgram,
   saveWeeklyProgram,
   getSessionLogs,
+  getPendingProgram,
+  clearPendingProgram,
 } from './storage';
 import { getCached, isConfigured, refreshAll } from './driveSync';
 import { getTodayDate, getWeekStart, formatDate } from '../utils/date';
 import { matchExercises, prefetchWeekImages } from './exerciseDb';
+import { reviewAndStage } from './programReview';
 
 // ─────────────────────────────────────────────────────────────
 // Model-output shape + strict JSON schema
@@ -284,14 +288,13 @@ function exercisesEqual(a: ProgramExercise[], b: ProgramExercise[]): boolean {
 }
 
 /**
- * Turn a validated model week into the persisted WeeklyProgram, reconciled
- * against the current stored week: days already marked 'done' are copied back
- * verbatim (never touched), days whose exercises are unchanged keep their prior
- * status, and days whose exercises changed are marked 'amended'. Bumps the
- * revision, persists, and warms the image cache. Shared by amendProgram() and
- * the coach's update_weekly_program tool.
+ * Turn a validated model week into a WeeklyProgram, reconciled against a base
+ * week: days already marked 'done' are copied back verbatim (never touched),
+ * days whose exercises are unchanged keep their prior status, and days whose
+ * exercises changed are marked 'amended'. Bumps the revision and fills slugs.
+ * PURE of persistence — the caller decides whether to save or stage.
  */
-async function reconcileAndSave(
+async function reconcile(
   model: ModelProgram,
   current: WeeklyProgram | null
 ): Promise<{ program: WeeklyProgram; changedDates: string[] }> {
@@ -317,43 +320,117 @@ async function reconcileAndSave(
     rationale: model.rationale ?? current?.rationale,
   };
 
-  await saveWeeklyProgram(program);
-  prefetchWeekImages(program);
   return { program, changedDates };
 }
 
-const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+/** Recent logs used to derive the volume norm the reviewer compares against. */
+const NORM_LOG_WINDOW_DAYS = 28;
 
-/** Short weekday for an ISO date (local noon to dodge TZ edges). */
-function weekdayShort(date: string): string {
-  return WEEKDAY_SHORT[new Date(`${date}T12:00:00`).getDay()] ?? date;
-}
-
-function summarizeChange(changedDates: string[]): string {
-  if (changedDates.length === 0) return 'Updated the weekly program';
-  const days = changedDates.map(weekdayShort).join(', ');
-  return `Updated the weekly program — ${days}`;
-}
-
-export interface ProgramUpdateResult {
-  program: WeeklyProgram;
-  changedDates: string[];
-  /** Short chip/tool-result summary, e.g. "Updated the weekly program — Wed, Fri". */
-  summary: string;
+/**
+ * Stage a coach-supplied full-week replacement (the update_weekly_program tool)
+ * as a PENDING proposal instead of applying it. Validates the raw model object,
+ * reconciles against the stored week (preserving done days) WITHOUT persisting,
+ * then routes through the safety-review gate, which stages the result for
+ * Jason's approval. `reason` is the user turn that prompted the change.
+ */
+export async function stageProgramReplacement(
+  raw: unknown,
+  reason: string
+): Promise<PendingProgram> {
+  const model = validateModelProgram(raw);
+  const current = await getWeeklyProgram();
+  const { program } = await reconcile(model, current);
+  const recentLogs = await getSessionLogs(NORM_LOG_WINDOW_DAYS);
+  return reviewAndStage(program, {
+    source: 'coach',
+    reason,
+    previous: current,
+    recentLogs,
+  });
 }
 
 /**
- * Apply a coach-supplied full-week replacement (the update_weekly_program tool).
- * Validates the raw model object, reconciles against the stored week (preserving
- * done days), persists, and returns a short summary for the chat tool chip.
+ * Revision pass used by the review gate: given a proposed week the reviewer
+ * flagged with must-fix concerns, ask the coach machinery to return a corrected
+ * full week that resolves them (the concerns are hard constraints). Reconciles
+ * against the PROPOSED week (so its weekStart and any done days are preserved)
+ * and returns the revised week WITHOUT persisting — the gate re-reviews then
+ * stages it. Reuses buildSystem/coachOptions/PROGRAM_SCHEMA.
  */
-export async function applyProgramReplacement(
-  raw: unknown
-): Promise<ProgramUpdateResult> {
+export async function reviseProgramForReview(
+  proposed: WeeklyProgram,
+  constraints: string[]
+): Promise<WeeklyProgram> {
+  const ctx = await buildProgramContext();
+  const system = buildSystem(ctx);
+
+  const doneDates = proposed.days
+    .filter((d) => d.status === 'done')
+    .map((d) => d.date);
+
+  const userText = `An independent safety reviewer flagged MUST-FIX problems with this proposed training week:
+
+${JSON.stringify({ weekStart: proposed.weekStart, days: proposed.days }, null, 2)}
+
+The reviewer's must-fix concerns (treat each as a HARD constraint you must resolve):
+${constraints.map((c) => `- ${c}`).join('\n')}
+
+Return the FULL corrected week (all 7 days, same dates, weekStart ${proposed.weekStart}). Change only what is needed to resolve every concern; keep everything else. Do NOT change days that are already done${
+    doneDates.length ? ` (dates: ${doneDates.join(', ')})` : ''
+  } — copy them back exactly. Use conventional exercise names.`;
+
+  const raw = await callClaudeStructured<ModelProgram>(
+    coachOptions(system, userText),
+    PROGRAM_SCHEMA
+  );
   const model = validateModelProgram(raw);
+  const { program } = await reconcile(model, proposed);
+  // Keep the proposal's revision number — this is a revision of the same
+  // proposal, not a further amendment of the active week.
+  return { ...program, revision: proposed.revision };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Approve / discard a pending proposal
+// ─────────────────────────────────────────────────────────────
+
+/** Copy back any day the active week has marked 'done' since the proposal was
+ * staged, so approving can never overwrite work Jason logged in the meantime. */
+function preserveDoneDays(
+  proposed: WeeklyProgram,
+  current: WeeklyProgram | null
+): WeeklyProgram {
+  if (!current) return proposed;
+  const doneByDate = new Map(
+    current.days.filter((d) => d.status === 'done').map((d) => [d.date, d])
+  );
+  if (doneByDate.size === 0) return proposed;
+  return {
+    ...proposed,
+    days: proposed.days.map((d) => doneByDate.get(d.date) ?? d),
+  };
+}
+
+/**
+ * Approve the pending proposal: move it into the active slot (archiving the
+ * outgoing week when it belongs to a different week), clear the pending slot,
+ * and warm the image cache. Done days on the current active week are preserved.
+ * Returns the newly active program, or null when nothing was pending.
+ */
+export async function approvePendingProgram(): Promise<WeeklyProgram | null> {
+  const pending = await getPendingProgram();
+  if (!pending) return null;
   const current = await getWeeklyProgram();
-  const { program, changedDates } = await reconcileAndSave(model, current);
-  return { program, changedDates, summary: summarizeChange(changedDates) };
+  const program = preserveDoneDays(pending.program, current);
+  await saveWeeklyProgram(program); // archives the outgoing week on week change
+  await clearPendingProgram();
+  prefetchWeekImages(program);
+  return program;
+}
+
+/** Discard the pending proposal without touching the active week. */
+export async function discardPendingProgram(): Promise<void> {
+  await clearPendingProgram();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -361,14 +438,16 @@ export async function applyProgramReplacement(
 // ─────────────────────────────────────────────────────────────
 
 export interface GenerateResult {
-  program: WeeklyProgram;
+  /** The staged proposal awaiting Jason's approval (never yet the active week). */
+  pending: PendingProgram;
   noTrainingFiles: boolean;
 }
 
 /**
- * Generate a fresh weekly program for the current week. Persists it, fills
- * exercise slugs, and warms the image cache. Throws a readable error if the
- * API key is missing (caller surfaces it) or the response is malformed.
+ * Generate a fresh weekly program for the current week, fill exercise slugs, and
+ * route it through the safety-review gate, which STAGES it as a pending proposal
+ * for Jason's approval (it is never applied silently). Throws a readable error
+ * if the API key is missing (caller surfaces it) or the response is malformed.
  */
 export async function generateWeeklyProgram(): Promise<GenerateResult> {
   const ctx = await buildProgramContext();
@@ -396,9 +475,15 @@ Output exactly 7 days, Monday (${ctx.weekStart}) through Sunday, with correct IS
     rationale: model.rationale ?? undefined,
   };
 
-  await saveWeeklyProgram(program);
-  prefetchWeekImages(program);
-  return { program, noTrainingFiles: ctx.noTrainingFiles };
+  const previous = await getWeeklyProgram();
+  const recentLogs = await getSessionLogs(NORM_LOG_WINDOW_DAYS);
+  const pending = await reviewAndStage(program, {
+    source: 'generate',
+    reason: 'Freshly generated week for the current split.',
+    previous,
+    recentLogs,
+  });
+  return { pending, noTrainingFiles: ctx.noTrainingFiles };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -408,10 +493,11 @@ Output exactly 7 days, Monday (${ctx.weekStart}) through Sunday, with correct IS
 /**
  * Amend the current program from free-form feedback (e.g. "lower back sore,
  * drop RDLs Friday"). Days already marked 'done' are preserved verbatim; days
- * whose exercises change are marked 'amended'. Bumps the revision. Persists,
- * fills slugs, and warms images. Throws if there is no current program.
+ * whose exercises change are marked 'amended'. The amended week is NOT applied
+ * directly — it is routed through the safety-review gate and STAGED as a pending
+ * proposal for Jason's approval. Throws if there is no current program.
  */
-export async function amendProgram(feedback: string): Promise<WeeklyProgram> {
+export async function amendProgram(feedback: string): Promise<PendingProgram> {
   const current = await getWeeklyProgram();
   if (!current) {
     throw new Error('No current program to amend. Generate a week first.');
@@ -444,8 +530,14 @@ Return the FULL replacement week (all 7 days, same dates, weekStart ${current.we
     PROGRAM_SCHEMA
   );
   const model = validateModelProgram(raw);
-  const { program } = await reconcileAndSave(model, current);
-  return program;
+  const { program } = await reconcile(model, current);
+  const recentLogs = await getSessionLogs(NORM_LOG_WINDOW_DAYS);
+  return reviewAndStage(program, {
+    source: 'amend',
+    reason: feedback,
+    previous: current,
+    recentLogs,
+  });
 }
 
 // ─────────────────────────────────────────────────────────────

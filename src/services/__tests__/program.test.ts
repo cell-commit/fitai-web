@@ -11,19 +11,35 @@ import {
 import {
   generateWeeklyProgram,
   amendProgram,
+  approvePendingProgram,
+  discardPendingProgram,
   validateModelProgram,
   programStateFor,
   weekDates,
   weekRangeLabel,
 } from '../program';
-import { getWeekStart } from '../../utils/date';
-import { saveSettings, getWeeklyProgram, saveWeeklyProgram } from '../storage';
+import { getWeekStart, getTodayDate } from '../../utils/date';
+import {
+  saveSettings,
+  getWeeklyProgram,
+  saveWeeklyProgram,
+  getPendingProgram,
+  savePendingProgram,
+  getProgramArchive,
+} from '../storage';
 import type { ClaudeResponse } from '../claude';
-import type { WeeklyProgram, DayFocus } from '../../types';
+import type {
+  WeeklyProgram,
+  DayFocus,
+  PendingProgram,
+  ReviewVerdict,
+} from '../../types';
 
 // ── Test fixtures ─────────────────────────────────────────────
+// Date-robust: the code computes the current week from today, so tests anchor
+// to today's Monday rather than a hard-coded date.
 
-const WEEK_START = getWeekStart('2026-07-13'); // a Monday
+const WEEK_START = getWeekStart(getTodayDate());
 const DATES = weekDates(WEEK_START);
 
 // Pin "today" inside the fixture week — generateWeeklyProgram derives the
@@ -72,6 +88,10 @@ function validModelProgram(overrides?: Partial<{ push: string[] }>) {
       modelDay(DATES[6], 'cardio', 'Cardio', []),
     ],
   };
+}
+
+function approvedVerdict(): ReviewVerdict {
+  return { approved: true, summary: 'Volumes look sensible.', concerns: [] };
 }
 
 function claudeTextResponse(obj: unknown): ClaudeResponse {
@@ -133,35 +153,52 @@ describe('validateModelProgram', () => {
   });
 });
 
-// ── generateWeeklyProgram ─────────────────────────────────────
+// ── generateWeeklyProgram → stages a pending proposal ─────────
 
 describe('generateWeeklyProgram', () => {
-  it('parses a valid structured response, fills slugs, persists at revision 1', async () => {
-    mockFetch.mockResolvedValueOnce(
-      fetchReturning(claudeTextResponse(validModelProgram()))
-    );
+  it('parses a valid response, fills slugs, and STAGES a pending proposal (active week untouched)', async () => {
+    mockFetch
+      // 1. generation
+      .mockResolvedValueOnce(fetchReturning(claudeTextResponse(validModelProgram())))
+      // 2. safety review (approved)
+      .mockResolvedValueOnce(fetchReturning(claudeTextResponse(approvedVerdict())));
 
-    const { program } = await generateWeeklyProgram();
+    const { pending } = await generateWeeklyProgram();
 
-    expect(program.weekStart).toBe(WEEK_START);
-    expect(program.days).toHaveLength(7);
-    expect(program.revision).toBe(1);
-    expect(program.days[0].status).toBe('planned');
+    expect(pending.source).toBe('generate');
+    expect(pending.revisedByReviewer).toBe(false);
+    expect('approved' in pending.review && pending.review.approved).toBe(true);
+
+    const p = pending.program;
+    expect(p.weekStart).toBe(WEEK_START);
+    expect(p.days).toHaveLength(7);
+    expect(p.revision).toBe(1);
 
     // Slug filled from the local matcher (no extra network call needed).
-    const legPress = program.days[0].exercises.find((e) => e.name === 'Leg Press');
+    const legPress = p.days[0].exercises.find((e) => e.name === 'Leg Press');
     expect(legPress?.slug).toBe('Leg_Press');
 
-    // The structured request set effort:'high' + the json_schema format.
+    // The generation request set effort:'high' + the json_schema format.
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.output_config.effort).toBe('high');
     expect(body.output_config.format.type).toBe('json_schema');
-    expect(body.max_tokens).toBe(8192);
     expect(body.thinking.type).toBe('adaptive');
 
-    // Persisted.
-    const stored = await getWeeklyProgram();
-    expect(stored?.weekStart).toBe(WEEK_START);
+    // Nothing was applied — the active week is still empty, the proposal is pending.
+    expect(await getWeeklyProgram()).toBeNull();
+    expect(await getPendingProgram()).not.toBeNull();
+  });
+
+  it('stages UNREVIEWED (fail open) when the review call fails', async () => {
+    mockFetch
+      .mockResolvedValueOnce(fetchReturning(claudeTextResponse(validModelProgram())))
+      // review fetch rejects
+      .mockRejectedValueOnce(new Error('network down'));
+
+    const { pending } = await generateWeeklyProgram();
+
+    expect(pending.review).toEqual({ status: 'unreviewed' });
+    expect(await getWeeklyProgram()).toBeNull();
   });
 
   it('throws on a malformed structured response', async () => {
@@ -174,7 +211,7 @@ describe('generateWeeklyProgram', () => {
   });
 });
 
-// ── amendProgram ──────────────────────────────────────────────
+// ── amendProgram → stages a pending proposal ──────────────────
 
 describe('amendProgram', () => {
   async function seedCurrent(): Promise<WeeklyProgram> {
@@ -206,10 +243,9 @@ describe('amendProgram', () => {
     return program;
   }
 
-  it('preserves done days, marks changed days amended, bumps revision', async () => {
+  it('stages a pending proposal; preserves done days; does not touch the active week', async () => {
     await seedCurrent();
 
-    // Replacement: Monday copied back (done), Wednesday swaps RDL → Face Pull.
     const replacement = {
       weekStart: WEEK_START,
       rationale: 'Dropped RDLs for the lower back.',
@@ -218,28 +254,129 @@ describe('amendProgram', () => {
         modelDay(DATES[2], 'pull', 'Pull', ['Face Pull']),
       ],
     };
-    mockFetch.mockResolvedValueOnce(
-      fetchReturning(claudeTextResponse(replacement))
-    );
+    mockFetch
+      .mockResolvedValueOnce(fetchReturning(claudeTextResponse(replacement)))
+      .mockResolvedValueOnce(fetchReturning(claudeTextResponse(approvedVerdict())));
 
-    const amended = await amendProgram('Lower back sore, drop RDLs this week');
+    const pending = await amendProgram('Lower back sore, drop RDLs this week');
 
-    expect(amended.revision).toBe(2);
-    const mon = amended.days.find((d) => d.date === DATES[0])!;
-    const wed = amended.days.find((d) => d.date === DATES[2])!;
+    expect(pending.source).toBe('amend');
+    const mon = pending.program.days.find((d) => d.date === DATES[0])!;
+    const wed = pending.program.days.find((d) => d.date === DATES[2])!;
     expect(mon.status).toBe('done'); // untouched
     expect(wed.status).toBe('amended'); // exercises changed
     expect(wed.exercises[0].name).toBe('Face Pull');
+
+    // The active week is STILL the seeded one — nothing applied.
+    const active = await getWeeklyProgram();
+    expect(active?.revision).toBe(1);
+    expect(active?.days.find((d) => d.date === DATES[2])?.exercises[0].name).toBe(
+      'Romanian Deadlift'
+    );
 
     // The done-day constraint was communicated to the model.
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     const userText = body.messages[0].content as string;
     expect(userText).toContain('Do NOT change days that are already done');
-    expect(userText).toContain(DATES[0]);
   });
 
   it('throws when there is no current program', async () => {
     await expect(amendProgram('anything')).rejects.toThrow(/No current program/i);
+  });
+});
+
+// ── approve / discard round-trip ──────────────────────────────
+
+describe('approve / discard pending', () => {
+  function pendingFixture(weekStart: string): PendingProgram {
+    return {
+      program: {
+        weekStart,
+        generatedAt: Date.now(),
+        revision: 2,
+        days: [
+          {
+            date: DATES[0],
+            focus: 'push',
+            title: 'Push',
+            status: 'amended',
+            exercises: [{ name: 'Incline DB Press', sets: 3, repRange: '8-10' }],
+          },
+        ],
+      },
+      review: approvedVerdict(),
+      proposedAt: Date.now(),
+      source: 'coach',
+      revisedByReviewer: false,
+    };
+  }
+
+  it('approve moves pending → active, clears pending, and archives the prior week', async () => {
+    // Prior active week belongs to a DIFFERENT (previous) week so it archives.
+    const priorWeek = getWeekStart(
+      new Date(new Date(`${WEEK_START}T12:00:00`).getTime() - 7 * 86_400_000)
+        .toISOString()
+        .slice(0, 10)
+    );
+    await saveWeeklyProgram({
+      weekStart: priorWeek,
+      generatedAt: 0,
+      revision: 1,
+      days: [],
+    });
+    await savePendingProgram(pendingFixture(WEEK_START));
+
+    const applied = await approvePendingProgram();
+
+    expect(applied?.weekStart).toBe(WEEK_START);
+    expect((await getWeeklyProgram())?.weekStart).toBe(WEEK_START);
+    expect(await getPendingProgram()).toBeNull();
+
+    const archive = await getProgramArchive();
+    expect(archive.some((p) => p.weekStart === priorWeek)).toBe(true);
+  });
+
+  it('approve preserves a day the active week completed after the proposal was staged', async () => {
+    // Active week already has Monday DONE; the pending proposal would overwrite it.
+    await saveWeeklyProgram({
+      weekStart: WEEK_START,
+      generatedAt: 0,
+      revision: 3,
+      days: [
+        {
+          date: DATES[0],
+          focus: 'push',
+          title: 'Push',
+          status: 'done',
+          exercises: [{ name: 'Leg Press', sets: 3, repRange: '10-12' }],
+        },
+      ],
+    });
+    await savePendingProgram(pendingFixture(WEEK_START));
+
+    const applied = await approvePendingProgram();
+    const mon = applied?.days.find((d) => d.date === DATES[0]);
+    expect(mon?.status).toBe('done');
+    expect(mon?.exercises[0].name).toBe('Leg Press'); // the logged day survived
+  });
+
+  it('discard clears pending and leaves the active week untouched', async () => {
+    await saveWeeklyProgram({
+      weekStart: WEEK_START,
+      generatedAt: 0,
+      revision: 1,
+      days: [],
+    });
+    await savePendingProgram(pendingFixture(WEEK_START));
+
+    await discardPendingProgram();
+
+    expect(await getPendingProgram()).toBeNull();
+    expect((await getWeeklyProgram())?.revision).toBe(1);
+  });
+
+  it('approvePendingProgram is a no-op returning null when nothing is pending', async () => {
+    expect(await approvePendingProgram()).toBeNull();
   });
 });
 

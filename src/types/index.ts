@@ -96,6 +96,43 @@ export interface WeeklyProgram {
   rationale?: string;
 }
 
+// ─────────────────────────────────────────────────────────────
+// Program safety-review gate (independent reviewer before a program
+// change reaches Jason). A proposed change is never applied silently:
+// it is staged as a PendingProgram for explicit approval.
+// ─────────────────────────────────────────────────────────────
+
+export interface ReviewConcern {
+  severity: 'must_fix' | 'caution';
+  /** What is wrong (one line, plain language). */
+  issue: string;
+  /** Concrete suggested fix. */
+  suggestion: string;
+}
+
+export interface ReviewVerdict {
+  approved: boolean;
+  /** One-line, user-facing summary of the review. */
+  summary: string;
+  concerns: ReviewConcern[];
+}
+
+/** Marker used when the review call itself failed (fail-open, but loud). */
+export interface UnreviewedMarker {
+  status: 'unreviewed';
+}
+
+export interface PendingProgram {
+  /** The proposed week awaiting approval (never yet the active program). */
+  program: WeeklyProgram;
+  /** Reviewer verdict, or an unreviewed marker when the review was unavailable. */
+  review: ReviewVerdict | UnreviewedMarker;
+  proposedAt: number;
+  source: 'generate' | 'amend' | 'coach';
+  /** True when the reviewer's must-fix concerns triggered a revision pass. */
+  revisedByReviewer: boolean;
+}
+
 // Logging
 
 export interface LoggedSet {

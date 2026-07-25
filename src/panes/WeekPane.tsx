@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import type { WeeklyProgram, ProgramDay } from '../types';
-import { getWeeklyProgram } from '../services/storage';
+import type { WeeklyProgram, ProgramDay, PendingProgram } from '../types';
+import { getWeeklyProgram, getPendingProgram } from '../services/storage';
 import {
   generateWeeklyProgram,
+  approvePendingProgram,
+  discardPendingProgram,
   programStateFor,
   weekRangeLabel,
   weekDates,
@@ -22,6 +24,8 @@ const GENERATING_MESSAGES = [
 
 export function WeekPane() {
   const [program, setProgram] = useState<WeeklyProgram | null>(null);
+  const [pending, setPending] = useState<PendingProgram | null>(null);
+  const [pendingBusy, setPendingBusy] = useState(false);
   const [state, setState] = useState<ProgramState>('none');
   const [today] = useState(getTodayDate());
   const [loading, setLoading] = useState(false);
@@ -31,9 +35,41 @@ export function WeekPane() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   async function refresh() {
-    const p = await getWeeklyProgram();
+    const [p, pend] = await Promise.all([
+      getWeeklyProgram(),
+      getPendingProgram(),
+    ]);
     setProgram(p);
+    setPending(pend);
     setState(programStateFor(p, today));
+  }
+
+  async function handleApprove() {
+    setPendingBusy(true);
+    setError(null);
+    try {
+      await approvePendingProgram();
+      setNotice('Approved — the new plan is now your active week.');
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPendingBusy(false);
+    }
+  }
+
+  async function handleDiscard() {
+    setPendingBusy(true);
+    setError(null);
+    try {
+      await discardPendingProgram();
+      setNotice('Discarded the proposed change. Your active week is unchanged.');
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPendingBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -68,6 +104,10 @@ export function WeekPane() {
         setNotice(
           'No training files connected — generated from a default template. Connect Drive sync in Settings for a plan built on your real status.'
         );
+      } else {
+        setNotice(
+          'Generated a proposed week — it has been safety-reviewed and is waiting for you to approve it below. Your active week is unchanged until then.'
+        );
       }
       await refresh();
     } catch (e) {
@@ -97,6 +137,15 @@ export function WeekPane() {
 
   return (
     <div className="pane">
+      {pending && (
+        <PendingBanner
+          pending={pending}
+          busy={pendingBusy}
+          onApprove={handleApprove}
+          onDiscard={handleDiscard}
+        />
+      )}
+
       {program && (
         <div className="week-head">
           <div>
@@ -181,6 +230,83 @@ export function WeekPane() {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Pending-approval banner ──────────────────────────────────
+
+const SOURCE_LABEL: Record<PendingProgram['source'], string> = {
+  generate: 'Newly generated week',
+  amend: 'Amendment from your session feedback',
+  coach: 'Change proposed by the coach',
+};
+
+interface PendingBannerProps {
+  pending: PendingProgram;
+  busy: boolean;
+  onApprove: () => void;
+  onDiscard: () => void;
+}
+
+function PendingBanner({ pending, busy, onApprove, onDiscard }: PendingBannerProps) {
+  const [showAll, setShowAll] = useState(false);
+  const review = 'status' in pending.review ? null : pending.review;
+  const unreviewed = review === null;
+  const concerns = review?.concerns ?? [];
+  const visible = showAll ? concerns : concerns.slice(0, 2);
+  const hidden = concerns.length - visible.length;
+
+  return (
+    <div className={`pending${unreviewed ? ' pending--unreviewed' : ''}`}>
+      <div className="pending__head">
+        <span className="pending__badge">
+          {unreviewed ? '⚠ Safety review unavailable' : '🛡️ Reviewed — awaiting your approval'}
+        </span>
+        <span className="pending__source">{SOURCE_LABEL[pending.source]}</span>
+      </div>
+
+      <div className="pending__summary">
+        {review
+          ? review.summary
+          : 'The independent safety review could not run — check this proposed plan yourself before approving.'}
+      </div>
+
+      {pending.revisedByReviewer && (
+        <div className="pending__note">Revised once after the reviewer flagged a must-fix issue.</div>
+      )}
+
+      {concerns.length > 0 && (
+        <ul className="pending__concerns">
+          {visible.map((c, i) => (
+            <li key={i} className={`pending__concern pending__concern--${c.severity}`}>
+              <span className="pending__sev">
+                {c.severity === 'must_fix' ? 'Must fix' : 'Caution'}
+              </span>
+              <span>
+                {c.issue}
+                {c.suggestion ? ` — ${c.suggestion}` : ''}
+              </span>
+            </li>
+          ))}
+          {hidden > 0 && (
+            <li>
+              <button className="pending__more" onClick={() => setShowAll(true)}>
+                Show {hidden} more
+              </button>
+            </li>
+          )}
+        </ul>
+      )}
+
+      <div className="pending__actions">
+        <button className="btn" onClick={onApprove} disabled={busy}>
+          {busy ? 'Working…' : 'Approve'}
+        </button>
+        <button className="btn btn--ghost" onClick={onDiscard} disabled={busy}>
+          Discard
+        </button>
+      </div>
     </div>
   );
 }
