@@ -73,7 +73,7 @@ a {
   height: calc(var(--tabbar-height) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   display: flex;
-  background: rgba(13, 13, 13, 0.92);
+  background: rgba(15, 23, 42, 0.92);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--border);
@@ -283,7 +283,7 @@ a {
   gap: var(--sp-sm);
   width: 100%;
   background: var(--accent);
-  color: #0d0d0d;
+  color: #0f172a;
   border: none;
   border-radius: var(--r-md);
   padding: 14px var(--sp-md);
@@ -911,7 +911,7 @@ a {
   max-width: 640px;
   margin: 0 auto;
   padding: var(--sp-sm) var(--sp-md);
-  background: rgba(13, 13, 13, 0.94);
+  background: rgba(15, 23, 42, 0.94);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--border);
@@ -971,7 +971,7 @@ a {
   flex-shrink: 0;
   border-radius: 50%;
   background: var(--success);
-  color: #0d0d0d;
+  color: #0f172a;
   font-weight: 800;
   display: flex;
   align-items: center;
@@ -1462,7 +1462,7 @@ a {
 .photo-thumb__check--on {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0d0d0d;
+  color: #0f172a;
 }
 .photo-thumb__note {
   position: absolute;

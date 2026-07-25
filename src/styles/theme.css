@@ -1,13 +1,13 @@
-/* FitAI theme — ported from the RN app's src/theme/index.ts palette.
- * Dark app, #0D0D0D base. Exposed as CSS custom properties so components style
- * with var(--…) instead of a JS theme object. */
+/* FitAI theme — slate variant (dark blue-grey, chosen by Jason Jul 2026).
+ * Originally ported from the RN app's #0D0D0D palette; hues shifted to a
+ * slate ramp, everything else unchanged. Components style with var(--…). */
 
 :root {
   /* Surfaces */
-  --bg: #0d0d0d;
-  --surface: #161618;
-  --surface-2: #1e1e22;
-  --surface-3: #28282e;
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --surface-2: #263449;
+  --surface-3: #324158;
 
   /* Accent */
   --accent: #ff6b35;
@@ -23,13 +23,13 @@
   --danger-muted: rgba(255, 71, 87, 0.15);
 
   /* Text */
-  --text: #ffffff;
-  --text-secondary: #a0a0a8;
-  --text-muted: #606068;
+  --text: #f1f5f9;
+  --text-secondary: #a5b2c5;
+  --text-muted: #64748b;
 
   /* Borders */
-  --border: #2a2a30;
-  --border-light: #222228;
+  --border: #384860;
+  --border-light: #2c3a50;
 
   /* Font sizes (px, from RN theme.fontSizes) */
   --fs-xs: 11px;

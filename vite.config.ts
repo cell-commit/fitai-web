@@ -58,8 +58,8 @@ export default defineConfig({
         description: 'Personal adaptive training coach',
         display: 'standalone',
         orientation: 'portrait',
-        theme_color: '#0D0D0D',
-        background_color: '#0D0D0D',
+        theme_color: '#0F172A',
+        background_color: '#0F172A',
         icons: [
           {
             src: 'icon.svg',
