@@ -11,6 +11,7 @@ import type {
   ChatMode,
   ProgressPhoto,
   HealthImportSummary,
+  PendingProgram,
 } from '../types';
 import { formatDate, getTodayDate } from '../utils/date';
 import { kv as store } from './kv';
@@ -31,6 +32,7 @@ const KEYS = {
   SETTINGS: '@fitai/settings',
   // WP1 additions
   WEEKLY_PROGRAM: '@fitai/weekly_program',
+  PENDING_PROGRAM: '@fitai/pending_program',
   PROGRAM_ARCHIVE: '@fitai/program_archive',
   SESSION_LOGS: '@fitai/session_logs',
   CHAT_COACH: '@fitai/chat_coach',
@@ -228,6 +230,29 @@ export async function saveWeeklyProgram(program: WeeklyProgram): Promise<void> {
     await archiveProgram(existing);
   }
   await store.setItem(KEYS.WEEKLY_PROGRAM, JSON.stringify(program));
+}
+
+// ─────────────────────────────────────────────────────────────
+// Pending program (single slot) — a proposed program change awaiting
+// Jason's explicit approval. Replaced wholesale on each new proposal so
+// only the latest proposal is ever pending.
+// ─────────────────────────────────────────────────────────────
+
+export async function getPendingProgram(): Promise<PendingProgram | null> {
+  try {
+    const data = await store.getItem(KEYS.PENDING_PROGRAM);
+    return data ? (JSON.parse(data) as PendingProgram) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function savePendingProgram(pending: PendingProgram): Promise<void> {
+  await store.setItem(KEYS.PENDING_PROGRAM, JSON.stringify(pending));
+}
+
+export async function clearPendingProgram(): Promise<void> {
+  await store.removeItem(KEYS.PENDING_PROGRAM);
 }
 
 export async function getProgramArchive(): Promise<WeeklyProgram[]> {

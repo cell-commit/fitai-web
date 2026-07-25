@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { sendCoachMessage } from '../coach';
-import { saveSettings, saveWeeklyProgram, getWeeklyProgram } from '../storage';
+import {
+  saveSettings,
+  saveWeeklyProgram,
+  getWeeklyProgram,
+  getPendingProgram,
+} from '../storage';
 import { getWeekStart } from '../../utils/date';
 import { weekDates } from '../program';
 import type { ClaudeResponse, ClaudeContentBlock } from '../claude';
@@ -207,10 +212,16 @@ describe('edit_training_status', () => {
   });
 });
 
-// ── update_weekly_program ─────────────────────────────────────
+// ── update_weekly_program → stages a pending proposal ─────────
+
+function verdictResponse(): ClaudeResponse {
+  return textResponse(
+    JSON.stringify({ approved: true, summary: 'Sensible week.', concerns: [] })
+  );
+}
 
 describe('update_weekly_program', () => {
-  it('persists the new week while preserving days already marked done', async () => {
+  it('STAGES the change for approval and does NOT modify the active weekly program', async () => {
     const current: WeeklyProgram = {
       weekStart: WEEK_START,
       generatedAt: 0,
@@ -220,7 +231,7 @@ describe('update_weekly_program', () => {
           date: DATES[0],
           focus: 'push',
           title: 'Push',
-          status: 'done', // must survive the coach's replacement
+          status: 'done',
           exercises: [
             { name: 'Leg Press', sets: 3, repRange: '10-12', slug: 'Leg_Press' },
             { name: 'Hip Thrust', sets: 3, repRange: '10-12' },
@@ -231,26 +242,47 @@ describe('update_weekly_program', () => {
     await saveWeeklyProgram(current);
 
     mockFetch
+      // 1. coach calls the tool
       .mockResolvedValueOnce(
         fetchReturning(
-          // Coach proposes a different Monday, but Monday is done → preserved.
           toolUseResponse('update_weekly_program', { week: modelWeek(['Barbell Bench Press']) })
         )
       )
-      .mockResolvedValueOnce(fetchReturning(textResponse('Reworked the rest of your week.')));
+      // 2. independent safety review (inside the tool handler)
+      .mockResolvedValueOnce(fetchReturning(verdictResponse()))
+      // 3. coach's closing text
+      .mockResolvedValueOnce(fetchReturning(textResponse('Staged it for your approval.')));
 
     const res = await sendCoachMessage('coach', 'drop RDLs, back is sore', []);
 
+    // Chip reflects the awaiting-approval state.
     expect(res.toolEvents[0].tool).toBe('update_weekly_program');
+    expect(res.toolEvents[0].summary).toBe('🛡️ Reviewed — awaiting your approval');
 
+    // The ACTIVE weekly program is UNCHANGED — nothing applied.
     const stored = await getWeeklyProgram();
-    const monday = stored?.days.find((d) => d.date === DATES[0]);
-    expect(monday?.status).toBe('done');
-    expect(monday?.exercises.map((e) => e.name)).toEqual(['Leg Press', 'Hip Thrust']);
+    expect(stored?.revision).toBe(1);
+    expect(stored?.days).toHaveLength(1);
+    expect(stored?.days.find((d) => d.date === DATES[0])?.status).toBe('done');
 
-    // Remaining days were adopted (Wednesday pull present).
-    expect(stored?.days.find((d) => d.date === DATES[2])?.focus).toBe('pull');
-    expect(stored?.revision).toBe(2);
+    // A pending proposal was staged instead, preserving the done Monday.
+    const pending = await getPendingProgram();
+    expect(pending).not.toBeNull();
+    expect(pending?.source).toBe('coach');
+    expect(pending?.program.days.find((d) => d.date === DATES[0])?.status).toBe('done');
+    expect(pending?.program.days.find((d) => d.date === DATES[2])?.focus).toBe('pull');
+
+    // The tool_result told the model the plan is awaiting approval, not applied.
+    const finalBody = JSON.parse(mockFetch.mock.calls[2][1].body);
+    const toolMsg = finalBody.messages.find(
+      (m: { role: string; content: unknown }) =>
+        Array.isArray(m.content) &&
+        (m.content as ClaudeContentBlock[]).some((b) => b.type === 'tool_result')
+    );
+    const toolResult = (toolMsg.content as ClaudeContentBlock[]).find(
+      (b) => b.type === 'tool_result'
+    );
+    expect(String(toolResult?.content)).toMatch(/awaiting Jason's approval/i);
   });
 });
 

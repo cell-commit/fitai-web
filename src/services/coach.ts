@@ -31,7 +31,7 @@ import {
 } from './claude';
 import {
   PROGRAM_SCHEMA,
-  applyProgramReplacement,
+  stageProgramReplacement,
 } from './program';
 import {
   buildCoachSystem,
@@ -147,12 +147,27 @@ async function readHistoryLog(): Promise<string> {
  * `events`; failed exact-match / availability cases return is_error tool_results
  * (and push no chip) so the tool loop continues and Claude can retry differently.
  */
-function makeHandlers(events: ChatToolEvent[]): Record<string, ToolHandler> {
+function makeHandlers(
+  events: ChatToolEvent[],
+  reason: string
+): Record<string, ToolHandler> {
   return {
     update_weekly_program: async (input) => {
-      const res = await applyProgramReplacement(input.week);
-      events.push({ tool: 'update_weekly_program', summary: res.summary });
-      return { content: res.summary };
+      // Route through the safety-review gate: the change is STAGED for Jason's
+      // approval, never applied silently. Tell the model so its reply reflects
+      // that the plan is pending rather than already in effect.
+      const pending = await stageProgramReplacement(input.week, reason);
+      events.push({
+        tool: 'update_weekly_program',
+        summary: '🛡️ Reviewed — awaiting your approval',
+      });
+      const reviewSummary =
+        'status' in pending.review
+          ? 'The independent safety review was unavailable, so it is staged UNREVIEWED — flag that Jason should check it himself.'
+          : pending.review.summary;
+      return {
+        content: `The updated plan has been staged and is awaiting Jason's approval in the Week tab — it has NOT been applied yet. Independent review: ${reviewSummary} In your reply, tell Jason the plan is ready for him to approve or discard; do NOT claim it is already in effect.`,
+      };
     },
 
     edit_training_status: async (input) => {
@@ -313,7 +328,7 @@ async function runCoach(
       output_config: { effort: 'medium' },
       maxTokens: 4096,
     },
-    makeHandlers(events)
+    makeHandlers(events, userText)
   );
 
   let assistantText = firstText(result.response);

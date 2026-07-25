@@ -1696,3 +1696,98 @@ a {
   gap: var(--sp-xs);
   flex: 0 0 auto;
 }
+
+/* ─── Program safety-review: pending-approval banner (WeekPane) ─── */
+.pending {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #4f8cff);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  padding: var(--sp-md);
+  margin-bottom: var(--sp-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+}
+.pending--unreviewed {
+  border-left-color: #e0a63c;
+  background: rgba(224, 166, 60, 0.08);
+}
+.pending__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm);
+  flex-wrap: wrap;
+}
+.pending__badge {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+.pending__source {
+  font-size: var(--fs-xs, 12px);
+  color: var(--text-dim, #9aa0a6);
+}
+.pending__summary {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  line-height: 1.4;
+}
+.pending__note {
+  font-size: var(--fs-xs, 12px);
+  color: var(--text-dim, #9aa0a6);
+  font-style: italic;
+}
+.pending__concerns {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xs);
+}
+.pending__concern {
+  display: flex;
+  gap: var(--sp-sm);
+  align-items: baseline;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  line-height: 1.4;
+}
+.pending__sev {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs, 11px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: var(--r-sm, 4px);
+  background: var(--surface-3);
+  color: var(--text-dim, #9aa0a6);
+}
+.pending__concern--must_fix .pending__sev {
+  background: rgba(224, 76, 76, 0.18);
+  color: #ff7676;
+}
+.pending__concern--caution .pending__sev {
+  background: rgba(224, 166, 60, 0.18);
+  color: #e0a63c;
+}
+.pending__more {
+  background: none;
+  border: none;
+  color: var(--accent, #4f8cff);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  padding: 0;
+}
+.pending__actions {
+  display: flex;
+  gap: var(--sp-sm);
+  margin-top: var(--sp-xs);
+}
+.pending__actions .btn {
+  flex: 1;
+  max-width: 200px;
+}

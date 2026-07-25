@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { SessionLog, CheckIn, WeeklyProgram } from '../../types';
+import type {
+  SessionLog,
+  CheckIn,
+  WeeklyProgram,
+  PendingProgram,
+} from '../../types';
 
 // Mock the two side-effecting collaborators so completeSession can be exercised
 // without a network / a real amend call. storage stays real (jsdom localStorage).
@@ -8,7 +13,7 @@ vi.mock('../driveSync', () => ({
   isConfigured: vi.fn(async () => true),
 }));
 vi.mock('../program', () => ({
-  amendProgram: vi.fn(async () => ({}) as WeeklyProgram),
+  amendProgram: vi.fn(async () => ({}) as PendingProgram),
 }));
 
 import { queueWrite, isConfigured } from '../driveSync';
@@ -44,7 +49,7 @@ beforeEach(() => {
   isConfiguredMock.mockReset();
   isConfiguredMock.mockResolvedValue(true);
   amendProgramMock.mockReset();
-  amendProgramMock.mockResolvedValue({} as WeeklyProgram);
+  amendProgramMock.mockResolvedValue({} as PendingProgram);
 });
 
 // ── fixtures ──────────────────────────────────────────────────
