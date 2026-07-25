@@ -3,8 +3,7 @@ import {
   it,
   expect,
   beforeEach,
-  beforeAll,
-  afterAll,
+
   vi,
   type Mock,
 } from 'vitest';
@@ -41,16 +40,6 @@ import type {
 
 const WEEK_START = getWeekStart(getTodayDate());
 const DATES = weekDates(WEEK_START);
-
-// Pin "today" inside the fixture week — generateWeeklyProgram derives the
-// week from the real clock, so without this the suite rots as time passes.
-beforeAll(() => {
-  vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(new Date('2026-07-14T10:00:00'));
-});
-afterAll(() => {
-  vi.useRealTimers();
-});
 
 function modelDay(
   date: string,
