@@ -1844,31 +1844,22 @@ a {
   background: rgba(224, 166, 60, 0.18);
   color: #e0a63c;
 }
-.pending__more {
-  background: none;
-  border: none;
-  color: var(--accent, #4f8cff);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  padding: 0;
-}
-.pending__actions {
-  display: flex;
-  gap: var(--sp-sm);
-  margin-top: var(--sp-xs);
-}
-.pending__actions .btn {
-  flex: 1;
-  max-width: 200px;
-}
 .pending__concern-text {
   min-width: 0;
 }
-.pending__preview {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-sm);
-  align-items: flex-start;
+/* Compact card: the summary is a teaser, not the whole verdict — two lines. */
+.pending__summary--tight .clamp__body--clamped {
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.pending__count {
+  font-size: var(--fs-xs, 12px);
+  font-weight: 600;
+  color: #e0a63c;
+}
+.pending__cta {
+  margin-top: var(--sp-xs);
+  min-height: 44px;
 }
 
 /* ─── Defensive clamp for long model-generated copy ─── */
@@ -1898,46 +1889,75 @@ a {
   cursor: pointer;
 }
 
-/* ─── Proposed-week preview (inside the pending-approval card) ─── */
-.ppv {
+/* Label over the active week grid while a proposal is pending. */
+.week-section-label {
+  font-size: var(--fs-xs, 12px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #9aa0a6);
+  margin-bottom: var(--sp-sm);
+}
+
+/* ─── Proposed-week review page (ProposedWeekPage) ─── */
+.pwreview {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #4f8cff);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  padding: var(--sp-md);
+  margin: var(--sp-md) 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-sm);
+}
+.pwreview--unreviewed {
+  border-left-color: #e0a63c;
+  background: rgba(224, 166, 60, 0.08);
+}
+.pwreview__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm);
+  flex-wrap: wrap;
+}
+
+/* Tappable proposed-day rows (44px minimum touch target). */
+.pweek {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xs);
   width: 100%;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  padding: var(--sp-xs);
 }
-.ppv__day {
-  border-radius: var(--r-sm, 6px);
-}
-.ppv__day--changed {
-  background: var(--accent-glow);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.ppv__row {
+.pweek__row {
   display: flex;
   align-items: center;
   gap: var(--sp-sm);
   width: 100%;
+  min-height: 56px;
   text-align: left;
-  background: none;
-  border: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
   color: var(--text);
-  padding: 8px var(--sp-sm);
+  padding: 10px var(--sp-md);
   font-size: var(--fs-sm);
 }
-.ppv__row:disabled {
-  opacity: 0.65;
+.pweek__row:disabled {
+  opacity: 0.6;
 }
-.ppv__weekday {
+.pweek__row--changed {
+  background: var(--accent-glow);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.pweek__weekday {
   flex: 0 0 auto;
-  width: 32px;
+  width: 34px;
   font-weight: 700;
   color: var(--text-secondary);
 }
-.ppv__main {
+.pweek__main {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
@@ -1945,25 +1965,26 @@ a {
   align-items: flex-start;
   gap: 4px;
 }
-.ppv__title {
+.pweek__title {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
+  font-size: var(--fs-md);
 }
-.ppv__meta {
+.pweek__meta {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--sp-xs) var(--sp-sm);
 }
-.ppv__count {
+.pweek__count {
   flex: 0 0 auto;
   font-size: var(--fs-xs, 12px);
   color: var(--text-muted, #9aa0a6);
 }
-.ppv__changed {
+.pweek__changed {
   flex: 0 0 auto;
   font-size: var(--fs-xs, 11px);
   font-weight: 600;
@@ -1974,44 +1995,23 @@ a {
   background: var(--accent-muted);
   color: var(--accent);
 }
-.ppv__chev {
+.pweek__chev {
   flex: 0 0 auto;
   color: var(--text-muted, #9aa0a6);
-}
-.ppv__exlist {
-  list-style: none;
-  margin: 0;
-  padding: 0 var(--sp-sm) var(--sp-sm) calc(32px + var(--sp-md));
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.ppv__ex {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--sp-sm);
-  font-size: var(--fs-xs, 12px);
-  color: var(--text-secondary);
-}
-.ppv__ex-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ppv__ex-meta {
-  flex: 0 0 auto;
-  color: var(--text-muted, #9aa0a6);
-  font-variant-numeric: tabular-nums;
 }
 
-/* Label over the active week grid while a proposal is pending. */
-.week-section-label {
-  font-size: var(--fs-xs, 12px);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted, #9aa0a6);
-  margin-bottom: var(--sp-sm);
+/* Read-only badge on a proposed day (stands in for the status chip). */
+.chip--proposed {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+/* Sticky footer carrying two decisions rather than one CTA. */
+.finish-footer--split {
+  display: flex;
+  gap: var(--sp-sm);
+}
+.finish-footer--split .btn {
+  flex: 1;
+  min-height: 44px;
 }

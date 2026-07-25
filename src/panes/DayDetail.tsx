@@ -21,10 +21,24 @@ interface DayDetailProps {
   onClose: () => void;
   /** Fired after a session launched here is completed (Week view refreshes). */
   onSessionComplete?: () => void;
+  /**
+   * Read-only view of a day that is not (yet) part of the active week — used by
+   * the proposed-week review pages. Shows a "Proposed" badge instead of the
+   * status chip, never reads session logs, and offers no Start workout button.
+   */
+  readOnly?: boolean;
+  /** Label + aria target of the back button (default "Week"). */
+  backLabel?: string;
 }
 
 /** Slide-over detail view for a single program day, with in-place workout logging. */
-export function DayDetail({ day, onClose, onSessionComplete }: DayDetailProps) {
+export function DayDetail({
+  day,
+  onClose,
+  onSessionComplete,
+  readOnly = false,
+  backLabel = 'Week',
+}: DayDetailProps) {
   const [today] = useState(getTodayDate());
   const [running, setRunning] = useState(false);
   const [doneLog, setDoneLog] = useState<SessionLog | null>(null);
@@ -32,11 +46,14 @@ export function DayDetail({ day, onClose, onSessionComplete }: DayDetailProps) {
 
   const isRest = day.focus === 'rest';
   const hasExercises = day.exercises.length > 0;
-  const isDone = day.status === 'done';
+  // A proposed day is never "done" for display purposes — its status belongs to
+  // the week it would replace, and we always want to show the planned work.
+  const isDone = !readOnly && day.status === 'done';
 
   // Pull the session log that fulfilled this program day (if any), to show its
   // logged numbers once the day is complete.
   useEffect(() => {
+    if (readOnly) return;
     let alive = true;
     void listSessionLogs().then((logs) => {
       if (!alive) return;
@@ -49,7 +66,7 @@ export function DayDetail({ day, onClose, onSessionComplete }: DayDetailProps) {
     return () => {
       alive = false;
     };
-  }, [day.date]);
+  }, [day.date, readOnly]);
 
   async function handleStart() {
     // Guard: warn before discarding an in-progress session for another day.
@@ -116,7 +133,7 @@ export function DayDetail({ day, onClose, onSessionComplete }: DayDetailProps) {
   }
 
   // ── Detail view ──
-  const showStart = hasExercises && !isDone && logsLoaded;
+  const showStart = !readOnly && hasExercises && !isDone && logsLoaded;
 
   return (
     <div className="slideover" role="dialog" aria-label={`${day.title} details`}>
@@ -124,12 +141,12 @@ export function DayDetail({ day, onClose, onSessionComplete }: DayDetailProps) {
         <button
           className="btn btn--ghost btn--inline"
           onClick={onClose}
-          aria-label="Back to week"
+          aria-label={`Back to ${backLabel.toLowerCase()}`}
         >
           <ChevronRightIcon
             style={{ width: 16, height: 16, transform: 'rotate(180deg)' }}
           />
-          Week
+          {backLabel}
         </button>
       </div>
 
@@ -138,7 +155,11 @@ export function DayDetail({ day, onClose, onSessionComplete }: DayDetailProps) {
           <span className={`chip chip--${day.focus}`}>
             {FOCUS_LABELS[day.focus]}
           </span>
-          <span className={`chip chip--status-${day.status}`}>{day.status}</span>
+          {readOnly ? (
+            <span className="chip chip--proposed">Proposed</span>
+          ) : (
+            <span className={`chip chip--status-${day.status}`}>{day.status}</span>
+          )}
         </div>
         <h2 className="daydetail__title">{day.title}</h2>
         <p className="pane__subtitle">{formatDisplayDate(day.date)}</p>
