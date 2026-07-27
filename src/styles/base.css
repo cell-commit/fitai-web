@@ -1319,6 +1319,57 @@ a {
   margin: 0 var(--sp-md) var(--sp-sm);
 }
 
+/* Waiting feedback under the typing dots — an elapsed count reads as progress
+   rather than a hang on a 30–60s reply. */
+.chat__waiting {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  padding: 2px var(--sp-xs) 0;
+}
+.chat__waiting-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  padding: 2px var(--sp-xs) 0;
+  max-width: 260px;
+}
+
+/* Failed send, attached under the user's own bubble. The text stays visible and
+   the message is already persisted — this is a recoverable state, not a dead end. */
+.msg-failed {
+  margin-top: var(--sp-xs);
+  padding: var(--sp-sm) var(--sp-md);
+  border: 1px solid var(--danger);
+  background: var(--danger-muted);
+  border-radius: var(--r-md);
+  align-self: stretch;
+}
+.msg-failed__text {
+  font-size: var(--fs-xs);
+  color: var(--text);
+  line-height: 1.4;
+}
+.msg-failed__actions {
+  display: flex;
+  gap: var(--sp-sm);
+  margin-top: var(--sp-sm);
+}
+.msg-failed__btn {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: var(--r-round);
+  padding: 5px 14px;
+  font-family: var(--font-family);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+.msg-failed__btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 /* Fixed input bar, pinned above the tab bar (mirrors .finish-footer). */
 .chat__inputbar {
   position: fixed;
