@@ -37,6 +37,7 @@ const KEYS = {
   SESSION_LOGS: '@fitai/session_logs',
   CHAT_COACH: '@fitai/chat_coach',
   CHAT_NUTRITION: '@fitai/chat_nutrition',
+  COACH_INFLIGHT: '@fitai/coach_inflight',
   PHOTOS_META: '@fitai/photos_meta',
   HEALTH_SUMMARIES: '@fitai/health_summaries',
   EXERCISE_MATCH_CACHE: '@fitai/exercise_match_cache',
@@ -373,6 +374,39 @@ export async function saveChatMessages(
 ): Promise<void> {
   const capped = messages.slice(-CHAT_CAP);
   await store.setItem(chatKey(mode), JSON.stringify(capped));
+}
+
+// ─────────────────────────────────────────────────────────────
+// In-flight coach send (single slot) — written the moment a send starts and
+// cleared on success or user cancel. Survives an iOS page suspension, which is
+// what lets the app notice on resume that a reply never came back and offer /
+// run a retry instead of losing the message. See services/coachInflight.ts.
+// ─────────────────────────────────────────────────────────────
+
+export interface InflightCoachSend {
+  mode: ChatMode;
+  /** The exact user text, so a retry re-sends the same message. */
+  text: string;
+  startedAt: number;
+  /** 1 for the original send, 2 for the single automatic retry. */
+  attempts: number;
+}
+
+export async function getInflightSend(): Promise<InflightCoachSend | null> {
+  try {
+    const data = await store.getItem(KEYS.COACH_INFLIGHT);
+    return data ? (JSON.parse(data) as InflightCoachSend) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveInflightSend(record: InflightCoachSend): Promise<void> {
+  await store.setItem(KEYS.COACH_INFLIGHT, JSON.stringify(record));
+}
+
+export async function clearInflightSend(): Promise<void> {
+  await store.removeItem(KEYS.COACH_INFLIGHT);
 }
 
 // ─────────────────────────────────────────────────────────────

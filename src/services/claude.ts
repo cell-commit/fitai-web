@@ -105,6 +105,71 @@ export interface CallClaudeOptions {
   output_config?: OutputConfig;
   thinking?: ThinkingConfig;
   maxTokens?: number;
+  /** Caller-owned cancellation (e.g. leaving a screen). Optional. */
+  signal?: AbortSignal;
+  /**
+   * Per-request wall-clock budget. Defaults to DEFAULT_REQUEST_TIMEOUT_MS so no
+   * request can hang forever; existing call sites keep their behaviour and just
+   * gain the generous ceiling. In runToolLoop this applies to EACH API call, not
+   * the whole loop.
+   */
+  timeoutMs?: number;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Request durability (coach-chat resilience)
+//
+// Every call gets an AbortSignal and a timeout so a request that is never going
+// to complete — hung socket, or a fetch torn down because iOS suspended the page
+// — fails as a recognisable, retryable error instead of hanging or surfacing
+// Safari's bare "Load failed".
+// ─────────────────────────────────────────────────────────────
+export const DEFAULT_REQUEST_TIMEOUT_MS = 180_000;
+
+export type ClaudeRequestFailureKind = 'timeout' | 'abort' | 'network';
+
+/** A request that never reached a verdict — safe to retry (see isTransientClaudeError). */
+export class ClaudeRequestError extends Error {
+  readonly kind: ClaudeRequestFailureKind;
+  constructor(kind: ClaudeRequestFailureKind, message: string) {
+    super(message);
+    this.name = 'ClaudeRequestError';
+    this.kind = kind;
+  }
+}
+
+// Safari says "Load failed"; Chrome "Failed to fetch"; Firefox "NetworkError…".
+const TRANSIENT_MESSAGE =
+  /load failed|failed to fetch|network\s?error|network request failed|connection appears to be offline|aborted/i;
+
+/**
+ * True for connectivity / cancellation / timeout failures — the ones worth a
+ * silent retry. Real API verdicts (401 bad key, 429 rate limit, 400) are NOT
+ * transient: retrying them costs money and repeats the same answer.
+ */
+export function isTransientClaudeError(e: unknown): boolean {
+  if (e instanceof ClaudeRequestError) return true;
+  if (e instanceof Error) {
+    if (e.name === 'AbortError' || e.name === 'TimeoutError') return true;
+    // Anything we mapped to an explicit API error keeps its own message.
+    if (e.message.startsWith('API error (')) return false;
+    return TRANSIENT_MESSAGE.test(e.message);
+  }
+  return false;
+}
+
+/** A promise that rejects as soon as `signal` aborts (never resolves). */
+function rejectOnAbort(
+  signal: AbortSignal,
+  makeError: () => Error
+): Promise<never> {
+  return new Promise<never>((_resolve, reject) => {
+    if (signal.aborted) {
+      reject(makeError());
+      return;
+    }
+    signal.addEventListener('abort', () => reject(makeError()), { once: true });
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -137,17 +202,64 @@ export async function callClaude(
   if (opts.output_config) body.output_config = opts.output_config;
   if (opts.thinking) body.thinking = opts.thinking;
 
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': ANTHROPIC_VERSION,
-      // Web port: required for direct browser-to-API calls (design §Risks 2).
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify(body),
-  });
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const onCallerAbort = () => controller.abort();
+  if (opts.signal?.aborted) controller.abort();
+  else opts.signal?.addEventListener('abort', onCallerAbort, { once: true });
+
+  let response: Response;
+  try {
+    // The abort promise is raced against the fetch so the timeout holds even if
+    // the platform's fetch ignores the signal (or the page was suspended and the
+    // request will never settle either way).
+    response = await Promise.race([
+      fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': ANTHROPIC_VERSION,
+          // Web port: required for direct browser-to-API calls (design §Risks 2).
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      }),
+      rejectOnAbort(controller.signal, () =>
+        timedOut
+          ? new ClaudeRequestError(
+              'timeout',
+              `The coach did not reply within ${Math.round(timeoutMs / 1000)}s. Nothing was lost — you can try again.`
+            )
+          : new ClaudeRequestError('abort', 'The request was cancelled.')
+      ),
+    ]);
+  } catch (e) {
+    if (e instanceof ClaudeRequestError) throw e;
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw new ClaudeRequestError(
+        timedOut ? 'timeout' : 'abort',
+        timedOut
+          ? `The coach did not reply within ${Math.round(timeoutMs / 1000)}s. Nothing was lost — you can try again.`
+          : 'The request was cancelled.'
+      );
+    }
+    // fetch() rejects with a bare TypeError ("Load failed" on Safari) when the
+    // connection drops — including when iOS suspends the page mid-request.
+    throw new ClaudeRequestError(
+      'network',
+      'The connection dropped before the coach replied.'
+    );
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onCallerAbort);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -158,7 +270,14 @@ export async function callClaude(
     throw new Error(`API error (${response.status}): ${errorText}`);
   }
 
-  return (await response.json()) as ClaudeResponse;
+  try {
+    return (await response.json()) as ClaudeResponse;
+  } catch {
+    throw new ClaudeRequestError(
+      'network',
+      'The reply was cut off before it finished downloading.'
+    );
+  }
 }
 
 /** First text block of a response, or ''. */
@@ -221,6 +340,10 @@ export async function callClaudeStructured<T>(
 // handlers, append the assistant content + ONE user message containing
 // all tool_result blocks, then re-call. Cap 5 iterations. Re-send on
 // 'pause_turn'. Throw a friendly error on 'refusal'. Surface 'max_tokens'.
+//
+// opts.signal / opts.timeoutMs are forwarded to every API call in the loop (the
+// timeout is per call, not per loop), so a caller can cancel the whole loop with
+// one signal and no iteration can hang forever.
 // ─────────────────────────────────────────────────────────────
 export interface ToolHandlerResult {
   content: string;
