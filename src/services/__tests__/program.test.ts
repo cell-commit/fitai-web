@@ -183,6 +183,11 @@ describe('generateWeeklyProgram', () => {
     expect(systemText).toContain('PLAN COPY STYLE');
     expect(body.messages[0].content).toContain('PLAN COPY STYLE');
 
+    // Same for the variety/programming rules — Jason's monotony complaint is
+    // prevented at generation time, not only caught by the reviewer.
+    expect(systemText).toContain('PROGRAMMING RULES');
+    expect(body.messages[0].content).toContain('PROGRAMMING RULES');
+
     // Nothing was applied — the active week is still empty, the proposal is pending.
     expect(await getWeeklyProgram()).toBeNull();
     expect(await getPendingProgram()).not.toBeNull();
@@ -277,8 +282,9 @@ describe('amendProgram', () => {
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     const userText = body.messages[0].content as string;
     expect(userText).toContain('Do NOT change days that are already done');
-    // …as were the plan-copy limits.
+    // …as were the plan-copy limits and the variety rules.
     expect(userText).toContain('PLAN COPY STYLE');
+    expect(userText).toContain('PROGRAMMING RULES');
   });
 
   it('throws when there is no current program', async () => {

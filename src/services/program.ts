@@ -183,6 +183,24 @@ export const PLAN_STYLE_RULES = `PLAN COPY STYLE (strict — this text is read o
 - rationale: one sentence, ≤ 20 words.
 - Anything longer — reasoning, caveats, background — goes in your chat reply to Jason, never in the plan.`;
 
+/**
+ * Programming rules for WHAT goes in the week — kept separate from
+ * PLAN_STYLE_RULES (how the copy reads) so style and programming stay legible
+ * and separately editable. Shared by generate / amend / reviewer-revision, and
+ * mirrored in the coach's update_weekly_program tool description so chat-driven
+ * changes obey the same rules.
+ *
+ * Motivated by a real complaint: a generated week put "Chest-Supported Row" on
+ * all three lifting days. Jason's ask is variety for range of motion and for
+ * hitting a target area from different angles.
+ */
+export const PROGRAMMING_RULES = `PROGRAMMING RULES — VARIETY (Jason has asked for this explicitly: he wants range of motion and the target area hit from different angles):
+- Do NOT repeat the same exercise on more than one day in the week unless there is a specific reason — rehab/corrective work, or a movement his training status pins in place. Repeating a movement three days running is not acceptable programming.
+- Rotate variations instead of repeating: different row types (chest-supported row, one-arm dumbbell row, seated cable row, inverted row), different press angles (flat, incline, overhead), different grips (pronated, neutral, supinated), machine vs free-weight, bilateral vs unilateral. Vary the movement itself, not just the label.
+- Cover each muscle group with at least 2 DISTINCT movements whenever its weekly volume is meaningful (roughly 8+ sets). One exercise carrying a whole group's volume is a programming error.
+- Correctives explicitly prescribed in the training status (e.g. physio-assigned work, face pulls every session) are EXEMPT — keep them exactly as prescribed, on every day the status says, and do not swap them for variety's sake.
+- Keep exercise names conventional gym names so the app can match exercise images. Variety must come from genuinely different movements, never from invented or embellished names.`;
+
 const DEFAULT_CONTEXT = `No training files are connected yet. Assume a healthy intermediate lifter on a 3-day split — Monday Push, Wednesday Pull, Friday Full Body — with Thursday and Sunday easy cardio, and Tuesday/Saturday rest. Use conventional, safe programming until real training files are connected.`;
 
 export interface ProgramContext {
@@ -246,7 +264,7 @@ function buildSystem(ctx: ProgramContext) {
   const system = [
     {
       type: 'text' as const,
-      text: `${PERSONA}${rules}\n\nWhen you design a week, honour the current training split from the status file unless the status itself dictates a change (injury flare, deload, etc.). Use conventional gym exercise names (no invented names) so the app can match exercise images. Produce exactly 7 days, Monday through Sunday.\n\n${PLAN_STYLE_RULES}`,
+      text: `${PERSONA}${rules}\n\nWhen you design a week, honour the current training split from the status file unless the status itself dictates a change (injury flare, deload, etc.). Use conventional gym exercise names (no invented names) so the app can match exercise images. Produce exactly 7 days, Monday through Sunday.\n\n${PROGRAMMING_RULES}\n\n${PLAN_STYLE_RULES}`,
       cache_control: { type: 'ephemeral' as const },
     },
     {
@@ -422,6 +440,8 @@ Return the FULL corrected week (all 7 days, same dates, weekStart ${proposed.wee
     doneDates.length ? ` (dates: ${doneDates.join(', ')})` : ''
   } — copy them back exactly. Use conventional exercise names.
 
+${PROGRAMMING_RULES}
+
 ${PLAN_STYLE_RULES}`;
 
   const raw = await callClaudeStructured<ModelProgram>(
@@ -505,6 +525,8 @@ ${ctx.recentSessionsText}
 
 Output exactly 7 days, Monday (${ctx.weekStart}) through Sunday, with correct ISO dates. Honour the current split from the status file unless the status dictates otherwise. Rest/cardio days should have focus 'rest' or 'cardio' with few or no exercises. Set weekStart to ${ctx.weekStart}.
 
+${PROGRAMMING_RULES}
+
 ${PLAN_STYLE_RULES}`;
 
   const raw = await callClaudeStructured<ModelProgram>(
@@ -571,6 +593,8 @@ Jason's feedback / request:
 Return the FULL replacement week (all 7 days, same dates, weekStart ${current.weekStart}). Do NOT change days that are already done${
     doneDates.length ? ` (dates: ${doneDates.join(', ')})` : ''
   } — copy them back exactly. Adjust the remaining days to honour the feedback. Use conventional exercise names.
+
+${PROGRAMMING_RULES}
 
 ${PLAN_STYLE_RULES}`;
 

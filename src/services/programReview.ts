@@ -6,12 +6,25 @@
 // because Jason questioned it manually. Program changes must get an independent
 // check before they reach him, and nothing is ever applied silently.
 //
-// Two halves:
+// Second real incident (Jul 2026, with screenshots): the coach programmed
+// "Chest-Supported Row" on ALL THREE lifting days of one week, plus heavy
+// repetition of other movements. The volume gate was blind to it — 12 back sets
+// spread over three days looks perfectly healthy by set count. Jason's ask:
+// "make sure variety is included … ideally the same exercise is not repeated
+// during the week unless absolutely necessary" — his reasons are range of motion
+// and hitting the target area from different angles. Hence computeVarietyStats():
+// same philosophy as the volume half — CODE COUNTS, THE LLM JUDGES.
+//
+// Three parts:
 //   1. computeVolumeStats() — PURE TS. Deterministic per-muscle-group set totals
 //      (exercise → primaryMuscles via exercise-index slug lookup), per-day peaks,
 //      deltas vs the previous week and vs a norm derived from recent logs, plus
 //      the deterministic red flags the reviewer must weigh. Returns a compact
 //      object AND a human-readable text block for the prompt.
+//   1b. computeVarietyStats() — PURE TS. Per-exercise day counts, which movements
+//      repeat across days, and how many DISTINCT exercises cover each muscle
+//      group. Counting only: whether a repetition is justified (a prescribed
+//      corrective) is the reviewer's judgement, never the counter's.
 //   2. reviewProgram() / reviewAndStage() — one skeptical-reviewer MODELS.coach
 //      call (structured verdict); on any must_fix, ONE revision pass through the
 //      program-generation machinery, then a single re-review. The final week is
@@ -25,7 +38,7 @@ import type {
   PendingProgram,
   ReviewVerdict,
 } from '../types';
-import { getEntry } from './exerciseDb';
+import { getEntry, normalize } from './exerciseDb';
 import { getCached } from './driveSync';
 import { getWeekStart } from '../utils/date';
 import { MODELS, callClaudeStructured } from './claude';
@@ -41,6 +54,12 @@ export const WEEKLY_SET_CEILING = 20; // any group above this weekly
 export const WOW_JUMP_RATIO = 0.35; // >35% week-over-week jump for a group
 export const WOW_JUMP_MIN_ABS = 3; // …with at least this absolute set increase
 export const SESSION_SET_CEILING = 10; // single session, single group
+
+// Repetition thresholds (the monotony half). Day counts, not set counts.
+export const REPEAT_CAUTION_DAYS = 2; // same exercise on this many days → caution
+export const REPEAT_MUST_FIX_DAYS = 3; // …on this many → must_fix (unless prescribed)
+export const LOW_VARIETY_MIN_SETS = 8; // a group only counts as "meaningful volume" here
+export const LOW_VARIETY_MAX_DISTINCT = 1; // …covered by at most this many movements
 
 export interface RedFlag {
   kind: 'high_weekly_volume' | 'volume_jump' | 'high_session_volume';
@@ -343,6 +362,236 @@ export function computeVolumeStats(
 }
 
 // ─────────────────────────────────────────────────────────────
+// Variety / repetition stats (deterministic — code counts, LLM judges)
+// ─────────────────────────────────────────────────────────────
+
+export interface ExerciseOccurrence {
+  /** Identity key: the normalized name first seen for this movement. */
+  key: string;
+  /** Display name — the first spelling seen in the week. */
+  name: string;
+  /** Every spelling seen (more than one when a shared slug merged two). */
+  names: string[];
+  /** exercise-index slug, when the week resolved one. */
+  slug?: string;
+  /** Dates it appears on, in week order — one entry per day, never duplicated. */
+  dates: string[];
+  /** "date (day title)" labels, aligned with `dates`, for the prompt text. */
+  dayLabels: string[];
+  /** How many DISTINCT days it appears on (twice in one day still counts once). */
+  dayCount: number;
+  /** Total sets across the whole week. */
+  sets: number;
+}
+
+export interface GroupVariety {
+  group: string;
+  /** How many DIFFERENT exercises cover this group across the week. */
+  distinctExercises: number;
+  /** Total weekly sets attributed to the group (matches VolumeStats). */
+  sets: number;
+  /** The distinct exercises covering it, most sets first. */
+  exercises: string[];
+}
+
+export interface VarietyStats {
+  /** Every exercise in the week with its day count; most-repeated first. */
+  occurrences: ExerciseOccurrence[];
+  /** Occurrences appearing on REPEAT_CAUTION_DAYS or more distinct days. */
+  repeated: ExerciseOccurrence[];
+  /** Per muscle group: distinct exercise count vs total sets there. */
+  distinctByMuscleGroup: Record<string, GroupVariety>;
+  /** Some exercise appears on REPEAT_MUST_FIX_DAYS or more days. */
+  sameExerciseOn3PlusDays: boolean;
+  /** Some exercise appears on exactly REPEAT_CAUTION_DAYS days. */
+  sameExerciseOn2Days: boolean;
+  /** Groups with ≥ LOW_VARIETY_MIN_SETS weekly sets from ≤ 1 distinct movement. */
+  lowVarietyGroups: GroupVariety[];
+  /** Human-readable block for the reviewer prompt. */
+  text: string;
+}
+
+type MutableOccurrence = ExerciseOccurrence;
+
+/**
+ * Identity of a programmed movement. Primary key is the normalized name, so
+ * "Chest-Supported Row" and "Chest Supported Row" are one exercise. Two DIFFERENT
+ * spellings that resolved to the SAME exercise-index slug are also merged (the
+ * slug is the matcher's verdict on which movement it actually is) — otherwise
+ * near-duplicate naming would hide exactly the monotony we are looking for.
+ */
+function occurrenceKey(
+  name: string,
+  slug: string | undefined,
+  slugToKey: Map<string, string>
+): string {
+  const nameKey = normalize(name);
+  if (slug) {
+    const existing = slugToKey.get(slug);
+    if (existing) return existing;
+    if (nameKey) slugToKey.set(slug, nameKey);
+  }
+  return nameKey;
+}
+
+function buildVarietyText(stats: Omit<VarietyStats, 'text'>): string {
+  const lines: string[] = [];
+  lines.push(
+    'WEEKLY VARIETY — exact, pre-computed repetition counts for the proposed week. These numbers are authoritative; do not recount from the JSON.'
+  );
+
+  if (stats.repeated.length > 0) {
+    lines.push('REPEATED EXERCISES (same movement on more than one day):');
+    for (const o of stats.repeated) {
+      lines.push(
+        `  ⚠ ${o.name} — ${o.dayCount} days: ${o.dayLabels.join(', ')} (${o.sets} sets total)`
+      );
+    }
+  } else {
+    lines.push('No exercise is repeated on more than one day this week.');
+  }
+
+  const groups = Object.values(stats.distinctByMuscleGroup)
+    .filter((g) => g.group !== OTHER)
+    .sort((a, b) => b.sets - a.sets);
+  if (groups.length > 0) {
+    lines.push('DISTINCT MOVEMENTS PER MUSCLE GROUP:');
+    for (const g of groups) {
+      lines.push(
+        `  ${g.group}: ${g.distinctExercises} distinct exercise${
+          g.distinctExercises === 1 ? '' : 's'
+        } across ${g.sets} sets — ${g.exercises.join(', ')}`
+      );
+    }
+  }
+
+  if (stats.lowVarietyGroups.length > 0) {
+    lines.push(
+      `LOW-VARIETY GROUPS (≥ ${LOW_VARIETY_MIN_SETS} weekly sets funnelled through ≤ ${LOW_VARIETY_MAX_DISTINCT} movement):`
+    );
+    for (const g of stats.lowVarietyGroups) {
+      lines.push(
+        `  ⚠ ${g.group}: ${g.sets} sets from only ${g.distinctExercises} exercise (${g.exercises.join(', ')}).`
+      );
+    }
+  }
+
+  if (!stats.sameExerciseOn3PlusDays && !stats.sameExerciseOn2Days) {
+    lines.push('No deterministic repetition flags tripped.');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * PURE. Deterministic monotony stats for a proposed week: how many DISTINCT days
+ * each exercise appears on (and which), which movements repeat, and how many
+ * different exercises cover each primary muscle group versus the sets landing
+ * there. Muscle groups come from the exercise-index slug, same as the volume
+ * half; unresolved exercises are bucketed as "other" and excluded from the
+ * low-variety flag.
+ *
+ * Counting ONLY. A repetition that is genuinely justified — a physio-assigned
+ * corrective, face pulls prescribed every session — is still reported here; the
+ * exemption is the reviewer's judgement against training-status, not the
+ * counter's, so the reviewer always sees the raw truth.
+ */
+export function computeVarietyStats(week: WeeklyProgram): VarietyStats {
+  const slugToKey = new Map<string, string>();
+  const occ = new Map<string, MutableOccurrence>();
+  const groupAcc = new Map<
+    string,
+    { sets: number; byKey: Map<string, { name: string; sets: number }> }
+  >();
+
+  for (const day of week.days) {
+    const seenToday = new Set<string>();
+    for (const ex of day.exercises) {
+      const sets = Number.isFinite(ex.sets) ? ex.sets : 0;
+      if (sets <= 0) continue;
+      const key = occurrenceKey(ex.name, ex.slug ?? undefined, slugToKey);
+      if (!key) continue;
+
+      let entry = occ.get(key);
+      if (!entry) {
+        entry = {
+          key,
+          name: ex.name,
+          names: [ex.name],
+          slug: ex.slug ?? undefined,
+          dates: [],
+          dayLabels: [],
+          dayCount: 0,
+          sets: 0,
+        };
+        occ.set(key, entry);
+      }
+      if (!entry.names.includes(ex.name)) entry.names.push(ex.name);
+      if (!entry.slug && ex.slug) entry.slug = ex.slug;
+      entry.sets += sets;
+      if (!seenToday.has(key)) {
+        seenToday.add(key);
+        entry.dates.push(day.date);
+        entry.dayLabels.push(`${day.date} (${day.title})`);
+        entry.dayCount += 1;
+      }
+
+      for (const g of groupsForSlug(ex.slug) ?? [OTHER]) {
+        let acc = groupAcc.get(g);
+        if (!acc) {
+          acc = { sets: 0, byKey: new Map() };
+          groupAcc.set(g, acc);
+        }
+        acc.sets += sets;
+        const prior = acc.byKey.get(key);
+        if (prior) prior.sets += sets;
+        else acc.byKey.set(key, { name: entry.name, sets });
+      }
+    }
+  }
+
+  const occurrences = [...occ.values()].sort(
+    (a, b) =>
+      b.dayCount - a.dayCount || b.sets - a.sets || a.name.localeCompare(b.name)
+  );
+
+  const distinctByMuscleGroup: Record<string, GroupVariety> = {};
+  for (const [group, acc] of groupAcc) {
+    distinctByMuscleGroup[group] = {
+      group,
+      distinctExercises: acc.byKey.size,
+      sets: acc.sets,
+      exercises: [...acc.byKey.values()]
+        .sort((a, b) => b.sets - a.sets || a.name.localeCompare(b.name))
+        .map((e) => e.name),
+    };
+  }
+
+  const lowVarietyGroups = Object.values(distinctByMuscleGroup)
+    .filter(
+      (g) =>
+        g.group !== OTHER &&
+        g.sets >= LOW_VARIETY_MIN_SETS &&
+        g.distinctExercises <= LOW_VARIETY_MAX_DISTINCT
+    )
+    .sort((a, b) => b.sets - a.sets || a.group.localeCompare(b.group));
+
+  const partial: Omit<VarietyStats, 'text'> = {
+    occurrences,
+    repeated: occurrences.filter((o) => o.dayCount >= REPEAT_CAUTION_DAYS),
+    distinctByMuscleGroup,
+    sameExerciseOn3PlusDays: occurrences.some(
+      (o) => o.dayCount >= REPEAT_MUST_FIX_DAYS
+    ),
+    sameExerciseOn2Days: occurrences.some(
+      (o) => o.dayCount === REPEAT_CAUTION_DAYS
+    ),
+    lowVarietyGroups,
+  };
+  return { ...partial, text: buildVarietyText(partial) };
+}
+
+// ─────────────────────────────────────────────────────────────
 // Reviewer — one skeptical MODELS.coach call, structured verdict
 // ─────────────────────────────────────────────────────────────
 
@@ -356,11 +605,18 @@ const REVIEW_INSTRUCTIONS = `Weigh these deterministic red flags (already comput
 )}% week-over-week.
 - Any single session with more than ${SESSION_SET_CEILING} sets for one muscle group.
 - Any contradiction with an injury, niggle, or watch-item in the training-status snapshot (e.g. loading a joint the status says to protect, or reintroducing a movement that was removed for pain).
+- Any exercise repeated across days, and any low-variety muscle group (both counted exactly for you in the WEEKLY VARIETY block).
 
 Judgement rules:
 - A jump to injury-risk volume for a muscle group, or programming that directly loads an area flagged in training-status, is a MUST_FIX.
 - Milder issues (slightly high volume, thin warm-up, imbalance, questionable exercise choice) are CAUTIONs.
 - approved must be false if there is any must_fix concern.
+
+VARIETY / MONOTONY (Jason has asked for this explicitly — he wants range of motion and the target area hit from different angles):
+- The same exercise on ${REPEAT_MUST_FIX_DAYS} or more days in the week is a MUST_FIX, unless his training status genuinely justifies it. A deliberately prescribed rehab or corrective movement — physio-assigned correctives, face pulls or band work the status says to do every session — is intentional: keep it and do NOT flag it.
+- The same exercise on exactly ${REPEAT_CAUTION_DAYS} days is a CAUTION worth one suggestion (same corrective exemption applies).
+- Call out any muscle group listed as LOW-VARIETY: meaningful weekly volume funnelled through a single movement. The corrective exemption applies here too — a group whose volume is simply a prescribed corrective repeated as instructed (e.g. shoulders covered only by face pulls) is not a variety problem.
+- Every variety suggestion must NAME a concrete substitute movement using a conventional gym exercise name ("swap Friday's chest-supported row for a one-arm dumbbell row"), never a bare "add more variety". Vary the movement, angle, grip, or machine-vs-free-weight — not just the name.
 
 OUTPUT STYLE (strict — Jason reads this on a phone, inside an approval card):
 - summary: ONE sentence, ≤ 20 words, plain language.
@@ -441,6 +697,7 @@ export async function reviewProgram(
     context.previous ?? null,
     context.recentLogs ?? []
   );
+  const variety = computeVarietyStats(proposed);
 
   const status = await getCached('training-status.md');
   const statusText = status?.content?.trim()
@@ -462,6 +719,8 @@ PROPOSED WEEK (JSON):
 ${JSON.stringify({ weekStart: proposed.weekStart, days: proposed.days }, null, 2)}
 
 ${stats.text}
+
+${variety.text}
 
 ${REVIEW_INSTRUCTIONS}`;
 

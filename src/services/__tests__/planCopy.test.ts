@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PROGRAM_SCHEMA, PLAN_STYLE_RULES } from '../program';
+import { PROGRAM_SCHEMA, PLAN_STYLE_RULES, PROGRAMMING_RULES } from '../program';
 import { REVIEW_SCHEMA } from '../programReview';
 import { COACH_TOOLS } from '../coach';
 
@@ -66,6 +66,33 @@ describe('PLAN_STYLE_RULES prompt block', () => {
   });
 });
 
+describe('PROGRAMMING_RULES prompt block', () => {
+  it('is a block of its own, so style and programming stay separable', () => {
+    expect(PROGRAMMING_RULES).toContain('PROGRAMMING RULES');
+    expect(PROGRAMMING_RULES).not.toContain('PLAN COPY STYLE');
+  });
+
+  it('bans same-exercise repetition across days and asks for rotated variations', () => {
+    expect(PROGRAMMING_RULES).toMatch(/not repeat the same exercise/i);
+    expect(PROGRAMMING_RULES).toMatch(/more than one day/i);
+    expect(PROGRAMMING_RULES).toMatch(/chest-supported row/i); // a concrete rotation
+    expect(PROGRAMMING_RULES).toMatch(/grip/i);
+    expect(PROGRAMMING_RULES).toMatch(/machine vs free-weight/i);
+  });
+
+  it('requires 2+ distinct movements per meaningful muscle group', () => {
+    expect(PROGRAMMING_RULES).toMatch(/2 DISTINCT movements/);
+    expect(PROGRAMMING_RULES).toMatch(/8\+ sets/);
+  });
+
+  it('exempts prescribed correctives and keeps names matchable', () => {
+    expect(PROGRAMMING_RULES).toMatch(/corrective/i);
+    expect(PROGRAMMING_RULES).toMatch(/EXEMPT/);
+    expect(PROGRAMMING_RULES).toMatch(/conventional gym names/i);
+    expect(PROGRAMMING_RULES).toMatch(/never from invented/i);
+  });
+});
+
 describe('update_weekly_program tool copy limits', () => {
   it('repeats the limits in the tool description', () => {
     const tool = COACH_TOOLS.find((t) => t.name === 'update_weekly_program');
@@ -74,6 +101,16 @@ describe('update_weekly_program tool copy limits', () => {
     expect(d).toMatch(/4 words/);
     expect(d).toMatch(/30 words/);
     expect(d).toMatch(/12 words/);
+  });
+
+  it('mirrors the variety rules so chat-driven changes obey them too', () => {
+    const d = COACH_TOOLS.find((t) => t.name === 'update_weekly_program')!
+      .description;
+    expect(d).toMatch(/VARIETY/);
+    expect(d).toMatch(/not repeat the same exercise on more than one day/i);
+    expect(d).toMatch(/2 distinct movements/i);
+    expect(d).toMatch(/corrective/i);
+    expect(d).toMatch(/exempt/i);
   });
 
   it('carries the shared PROGRAM_SCHEMA so the field limits apply', () => {

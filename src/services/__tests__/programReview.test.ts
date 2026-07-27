@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import {
   computeVolumeStats,
+  computeVarietyStats,
   reviewAndStage,
 } from '../programReview';
 import { saveSettings, getPendingProgram } from '../storage';
@@ -44,6 +45,12 @@ function week(days: ProgramDay[]): WeeklyProgram {
 const CHEST = 'Barbell_Bench_Press_-_Medium_Grip';
 const MIDBACK = 'Bent_Over_Barbell_Row';
 const LATS = 'Wide-Grip_Lat_Pulldown';
+// Two more single-group slugs, for distinct-movement coverage of one group:
+//   Seated_Cable_Rows / One-Arm_Dumbbell_Row → middle back
+//   Face_Pull                                → shoulders (the corrective case)
+const MIDBACK2 = 'Seated_Cable_Rows';
+const MIDBACK3 = 'One-Arm_Dumbbell_Row';
+const SHOULDERS = 'Face_Pull';
 
 // ── computeVolumeStats ────────────────────────────────────────
 
@@ -165,6 +172,168 @@ describe('computeVolumeStats', () => {
   });
 });
 
+// ── computeVarietyStats ───────────────────────────────────────
+// Regression cover for the real complaint: "Chest-Supported Row" on all three
+// lifting days of one week. The counter must SEE that; whether it is justified
+// is the reviewer's call, not the counter's.
+
+describe('computeVarietyStats', () => {
+  it('flags an exercise programmed on 3 days as a 3+-day repetition', () => {
+    const proposed = week([
+      day('2026-07-13', 'push', 'Push', [ex('Chest-Supported Row', MIDBACK, 4)]),
+      day('2026-07-15', 'pull', 'Pull', [ex('Chest-Supported Row', MIDBACK, 4)]),
+      day('2026-07-17', 'fullbody', 'Full Body', [
+        ex('Chest-Supported Row', MIDBACK, 4),
+      ]),
+    ]);
+
+    const stats = computeVarietyStats(proposed);
+
+    expect(stats.sameExerciseOn3PlusDays).toBe(true);
+    expect(stats.sameExerciseOn2Days).toBe(false); // nothing sits at exactly 2
+    expect(stats.repeated).toHaveLength(1);
+
+    const row = stats.repeated[0];
+    expect(row.name).toBe('Chest-Supported Row');
+    expect(row.dayCount).toBe(3);
+    expect(row.dates).toEqual(['2026-07-13', '2026-07-15', '2026-07-17']);
+    expect(row.sets).toBe(12);
+
+    expect(stats.text).toContain('Chest-Supported Row — 3 days');
+    expect(stats.text).toContain('2026-07-17 (Full Body)');
+  });
+
+  it('flags an exercise on exactly 2 days separately from the 3+ case', () => {
+    const proposed = week([
+      day('2026-07-13', 'pull', 'Pull', [ex('Barbell Row', MIDBACK, 3)]),
+      day('2026-07-15', 'upper', 'Upper', [ex('Barbell Row', MIDBACK, 3)]),
+    ]);
+
+    const stats = computeVarietyStats(proposed);
+
+    expect(stats.sameExerciseOn2Days).toBe(true);
+    expect(stats.sameExerciseOn3PlusDays).toBe(false);
+    expect(stats.repeated.map((o) => o.dayCount)).toEqual([2]);
+    // 6 middle-back sets is under the meaningful-volume bar, so no group flag.
+    expect(stats.lowVarietyGroups).toEqual([]);
+  });
+
+  it('still reports repetition of a corrective — the exemption is the reviewers judgement, not the counters', () => {
+    const proposed = week([
+      day('2026-07-13', 'push', 'Push', [ex('Face Pull', SHOULDERS, 2)]),
+      day('2026-07-15', 'pull', 'Pull', [ex('Face Pull', SHOULDERS, 2)]),
+      day('2026-07-17', 'fullbody', 'Full Body', [ex('Face Pull', SHOULDERS, 2)]),
+    ]);
+
+    const stats = computeVarietyStats(proposed);
+
+    // No exemption logic in the counter: the reviewer sees the raw truth and
+    // decides, against training-status, whether it is prescribed on purpose.
+    expect(stats.sameExerciseOn3PlusDays).toBe(true);
+    expect(stats.repeated.map((o) => o.name)).toEqual(['Face Pull']);
+    expect(stats.repeated[0].dayCount).toBe(3);
+  });
+
+  it('counts distinct movements per group and flags only the low-variety ones', () => {
+    const proposed = week([
+      day('2026-07-13', 'push', 'Push', [
+        ex('Barbell Bench Press', CHEST, 6),
+        ex('Barbell Row', MIDBACK, 5),
+      ]),
+      day('2026-07-15', 'pull', 'Pull', [
+        ex('Barbell Bench Press', CHEST, 6),
+        ex('Seated Cable Row', MIDBACK2, 5),
+      ]),
+    ]);
+
+    const stats = computeVarietyStats(proposed);
+
+    // middle back: 10 sets over TWO distinct rows → meaningful but varied.
+    const mid = stats.distinctByMuscleGroup['middle back'];
+    expect(mid.sets).toBe(10);
+    expect(mid.distinctExercises).toBe(2);
+    expect(mid.exercises.sort()).toEqual(['Barbell Row', 'Seated Cable Row']);
+
+    // chest: 12 sets from ONE movement → low variety.
+    const chest = stats.distinctByMuscleGroup.chest;
+    expect(chest.sets).toBe(12);
+    expect(chest.distinctExercises).toBe(1);
+
+    expect(stats.lowVarietyGroups.map((g) => g.group)).toEqual(['chest']);
+    expect(stats.text).toContain('chest: 12 sets from only 1 exercise');
+    expect(stats.text).toContain('middle back: 2 distinct exercises across 10 sets');
+  });
+
+  it('group set totals agree with computeVolumeStats', () => {
+    const proposed = week([
+      day('2026-07-13', 'pull', 'Pull', [
+        ex('Barbell Row', MIDBACK, 4),
+        ex('One-Arm Dumbbell Row', MIDBACK3, 3),
+        ex('Lat Pulldown', LATS, 3),
+      ]),
+    ]);
+
+    const volume = computeVolumeStats(proposed);
+    const variety = computeVarietyStats(proposed);
+
+    for (const [group, sets] of Object.entries(volume.weeklyByGroup)) {
+      expect(variety.distinctByMuscleGroup[group].sets).toBe(sets);
+    }
+    expect(variety.distinctByMuscleGroup['middle back'].distinctExercises).toBe(2);
+  });
+
+  it('treats one day as one occurrence, merges spellings, and ignores zero-set entries', () => {
+    const proposed = week([
+      day('2026-07-13', 'pull', 'Pull', [
+        // Twice in one session: one DAY, but both set counts.
+        ex('Barbell Row', MIDBACK, 3),
+        ex('Barbell Row', MIDBACK, 2),
+        ex('Placeholder', undefined, 0), // no sets → not programmed
+      ]),
+      day('2026-07-15', 'upper', 'Upper', [
+        // Different spelling, same slug → the same movement.
+        ex('Bent-Over Barbell Row', MIDBACK, 3),
+      ]),
+      day('2026-07-17', 'fullbody', 'Full Body', [
+        // No slug on either side, but normalization makes them one exercise.
+        ex('Chest-Supported Row', undefined, 3),
+      ]),
+      day('2026-07-18', 'upper', 'Upper 2', [
+        ex('Chest Supported Row', undefined, 3),
+      ]),
+    ]);
+
+    const stats = computeVarietyStats(proposed);
+
+    const barbellRow = stats.occurrences.find((o) => o.slug === MIDBACK)!;
+    expect(barbellRow.dayCount).toBe(2); // not 3
+    expect(barbellRow.sets).toBe(8); // 3 + 2 + 3
+    expect(barbellRow.names).toEqual(['Barbell Row', 'Bent-Over Barbell Row']);
+
+    const supported = stats.occurrences.find((o) => o.key === 'chest supported row')!;
+    expect(supported.dayCount).toBe(2);
+    expect(supported.sets).toBe(6);
+
+    expect(stats.occurrences.map((o) => o.name)).not.toContain('Placeholder');
+    // Unresolved exercises land in 'other', which is never a low-variety flag.
+    expect(stats.lowVarietyGroups.map((g) => g.group)).not.toContain('other');
+  });
+
+  it('says so plainly when nothing repeats', () => {
+    const proposed = week([
+      day('2026-07-13', 'push', 'Push', [ex('Barbell Bench Press', CHEST, 4)]),
+      day('2026-07-15', 'pull', 'Pull', [ex('Barbell Row', MIDBACK, 4)]),
+    ]);
+
+    const stats = computeVarietyStats(proposed);
+    expect(stats.repeated).toEqual([]);
+    expect(stats.sameExerciseOn2Days).toBe(false);
+    expect(stats.sameExerciseOn3PlusDays).toBe(false);
+    expect(stats.text).toMatch(/No exercise is repeated on more than one day/);
+    expect(stats.text).toMatch(/No deterministic repetition flags tripped/);
+  });
+});
+
 // ── reviewAndStage orchestration ──────────────────────────────
 
 function claudeText(obj: unknown): ClaudeResponse {
@@ -249,6 +418,43 @@ describe('reviewAndStage', () => {
     expect(userText).toMatch(/long-form reasoning is NOT wanted/i);
   });
 
+  it('sends the pre-computed variety stats AND the monotony rules to the reviewer', async () => {
+    mockFetch.mockResolvedValueOnce(
+      fetchReturning(claudeText({ approved: true, summary: 'Fine.', concerns: [] }))
+    );
+
+    // Jason's actual complaint: the same row on all three lifting days.
+    const monotonous = week([
+      day('2026-07-13', 'push', 'Push', [ex('Chest-Supported Row', MIDBACK, 4)]),
+      day('2026-07-15', 'pull', 'Pull', [ex('Chest-Supported Row', MIDBACK, 4)]),
+      day('2026-07-17', 'fullbody', 'Full Body', [
+        ex('Chest-Supported Row', MIDBACK, 4),
+      ]),
+    ]);
+
+    await reviewAndStage(monotonous, {
+      reason: 'test',
+      source: 'generate',
+      previous: null,
+      recentLogs: [],
+    });
+
+    const userText = JSON.parse(mockFetch.mock.calls[0][1].body).messages[0]
+      .content as string;
+
+    // The counts are pre-computed and marked authoritative.
+    expect(userText).toContain('WEEKLY VARIETY');
+    expect(userText).toContain('Chest-Supported Row — 3 days');
+    expect(userText).toContain('middle back: 12 sets from only 1 exercise');
+
+    // …and the judgement rules that turn them into a verdict.
+    expect(userText).toMatch(/same exercise on 3 or more days.*MUST_FIX/i);
+    expect(userText).toMatch(/exactly 2 days is a CAUTION/i);
+    expect(userText).toMatch(/corrective/i);
+    expect(userText).toMatch(/LOW-VARIETY/);
+    expect(userText).toMatch(/NAME a concrete substitute movement/);
+  });
+
   it('must_fix → runs the revision pass exactly once and re-reviews the result', async () => {
     mockFetch
       // 1. initial review with a must_fix
@@ -286,6 +492,13 @@ describe('reviewAndStage', () => {
     expect('approved' in pending.review && pending.review.approved).toBe(true);
     // The staged program is the REVISED one (single Leg Press push day).
     expect(pending.program.days[0].exercises[0].name).toBe('Leg Press');
+
+    // The revision pass must still be held to the variety rules, or a fix for
+    // one concern can quietly reintroduce monotony.
+    const revisionText = JSON.parse(mockFetch.mock.calls[1][1].body).messages[0]
+      .content as string;
+    expect(revisionText).toContain('PROGRAMMING RULES');
+    expect(revisionText).toContain('PLAN COPY STYLE');
     expect(await getPendingProgram()).not.toBeNull();
   });
 
