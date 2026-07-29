@@ -18,7 +18,12 @@
 //   append_history_log { markdown }  → queued append to the history log
 //   read_history_log {}              → cached history log (fetch if empty+configured)
 
-import type { ChatMessage, ChatMode, ChatToolEvent } from '../types';
+import type {
+  ChatAttachment,
+  ChatMessage,
+  ChatMode,
+  ChatToolEvent,
+} from '../types';
 import {
   MODELS,
   callClaude,
@@ -26,9 +31,11 @@ import {
   guardStopReason,
   firstText,
   type ClaudeMessage,
+  type ClaudeContentBlock,
   type ClaudeTool,
   type ToolHandler,
 } from './claude';
+import { attachmentsToBlocks } from './chatAttachments';
 import {
   PROGRAM_SCHEMA,
   stageProgramReplacement,
@@ -236,11 +243,61 @@ function makeHandlers(
 // Message assembly
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * How many past turns replay their images to the API. Deliberately ZERO.
+ *
+ * A 1024px photo costs roughly 1.5k input tokens. The history window is 30
+ * turns, so replaying attachments would re-upload every photo he has ever sent
+ * on EVERY later message — the cost of a one-word follow-up would quietly scale
+ * with how many pictures are still in the window, and the model would keep
+ * re-reading stale images as if they were current. Instead an attachment-bearing
+ * history turn is summarised in text (see historyText) and the coach's own
+ * earlier reply carries the memory of what was in the picture.
+ *
+ * Consequence accepted: "and the other shoulder?" cannot re-examine the photo.
+ * Raising this above 0 means budgeting the token cost first.
+ */
+export const REPLAY_ATTACHMENT_TURNS = 0;
+
+/** History rendering for a turn that carried images — text, never the bytes. */
+function historyText(m: ChatMessage): string {
+  const n = m.attachments?.length ?? 0;
+  if (n === 0) return m.text;
+  const note = `[${n} photo${n === 1 ? '' : 's'} — not re-sent]`;
+  return m.text ? `${m.text} ${note}` : note;
+}
+
 /** Map persisted chat history (trimmed to the last 30) to wire messages. */
 function historyToMessages(history: ChatMessage[]): ClaudeMessage[] {
   return history
     .slice(-HISTORY_LIMIT)
-    .map((m) => ({ role: m.role, content: m.text }));
+    .map((m) => ({ role: m.role, content: historyText(m) }));
+}
+
+/**
+ * The text that goes on the wire for this turn. A photo-only send must never
+ * produce an empty text block (or a turn of images with no text at all) — the
+ * API rejects it and the model has nothing to answer.
+ */
+function wireText(userText: string, imageCount: number): string {
+  const trimmed = userText.trim();
+  if (trimmed) return userText;
+  if (imageCount === 0) return userText;
+  return `(sent ${imageCount} photo${imageCount === 1 ? '' : 's'})`;
+}
+
+/**
+ * Build the final user turn: images first, then exactly ONE text block. The
+ * <context> block belongs INSIDE that text block, after the images — putting it
+ * in a block of its own before them would split the turn's instructions across
+ * two places and read as if the context described the pictures.
+ */
+function userTurn(
+  text: string,
+  imageBlocks: ClaudeContentBlock[]
+): ClaudeMessage {
+  if (imageBlocks.length === 0) return { role: 'user', content: text };
+  return { role: 'user', content: [...imageBlocks, { type: 'text', text }] };
 }
 
 function makeId(): string {
@@ -259,6 +316,21 @@ export interface SendCoachResult {
 }
 
 /**
+ * Options bag (not extra positional args) so every existing call site and test
+ * that passes three arguments keeps working untouched.
+ */
+export interface SendCoachOptions {
+  /** Images to attach to this turn; already resized and stored by attach time. */
+  attachments?: ChatAttachment[];
+  /**
+   * Force the persisted user message's id. coachInflight generates it up front
+   * so the durability record can match the turn by id instead of by text — a
+   * photo-only send has no text to match on.
+   */
+  messageId?: string;
+}
+
+/**
  * Send a chat message. Persists the user turn first (so it survives a failed
  * call), runs the mode-appropriate engine, persists the assistant turn, and
  * returns both messages plus the tool-event chips. `history` is the prior thread
@@ -267,24 +339,32 @@ export interface SendCoachResult {
 export async function sendCoachMessage(
   mode: ChatMode,
   userText: string,
-  history: ChatMessage[]
+  history: ChatMessage[],
+  opts: SendCoachOptions = {}
 ): Promise<SendCoachResult> {
+  const attachments = opts.attachments ?? [];
   const userMessage: ChatMessage = {
-    id: makeId(),
+    id: opts.messageId ?? makeId(),
     mode,
     role: 'user',
     text: userText,
     timestamp: Date.now(),
+    ...(attachments.length > 0 ? { attachments } : {}),
   };
   await appendChatMessage(userMessage);
+
+  // Encode once, here, so a mode branch cannot forget to do it.
+  const imageBlocks =
+    attachments.length > 0 ? await attachmentsToBlocks(attachments) : [];
+  const text = wireText(userText, imageBlocks.length);
 
   let assistantText: string;
   let toolEvents: ChatToolEvent[] = [];
 
   if (mode === 'nutrition') {
-    assistantText = await runNutrition(userText, history);
+    assistantText = await runNutrition(text, history, imageBlocks);
   } else {
-    const res = await runCoach(userText, history);
+    const res = await runCoach(text, history, imageBlocks);
     assistantText = res.assistantText;
     toolEvents = res.toolEvents;
   }
@@ -306,7 +386,8 @@ export async function sendCoachMessage(
 
 async function runCoach(
   userText: string,
-  history: ChatMessage[]
+  history: ChatMessage[],
+  imageBlocks: ClaudeContentBlock[] = []
 ): Promise<{ assistantText: string; toolEvents: ChatToolEvent[] }> {
   const [systemData, contextData] = await Promise.all([
     loadCoachSystemData(),
@@ -316,7 +397,7 @@ async function runCoach(
   const contextBlock = buildContextBlock(contextData);
 
   const messages: ClaudeMessage[] = historyToMessages(history);
-  messages.push({ role: 'user', content: `${contextBlock}\n\n${userText}` });
+  messages.push(userTurn(`${contextBlock}\n\n${userText}`, imageBlocks));
 
   const events: ChatToolEvent[] = [];
   const result = await runToolLoop(
@@ -348,13 +429,14 @@ async function runCoach(
 
 async function runNutrition(
   userText: string,
-  history: ChatMessage[]
+  history: ChatMessage[],
+  imageBlocks: ClaudeContentBlock[] = []
 ): Promise<string> {
   const data = await loadNutritionSystemData();
   const system = buildNutritionSystem(data);
 
   const messages: ClaudeMessage[] = historyToMessages(history);
-  messages.push({ role: 'user', content: userText });
+  messages.push(userTurn(userText, imageBlocks));
 
   const response = await callClaude({
     model: MODELS.coach,

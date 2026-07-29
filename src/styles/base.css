@@ -2284,3 +2284,139 @@ a {
   flex: 1;
   min-height: 44px;
 }
+
+/* ── Chat attachments ─────────────────────────────────────────
+   Appended at EOF deliberately: WP-1 appends its own block earlier in this
+   file, and keeping the two additions apart keeps the merge trivial. */
+
+/* The input bar becomes a column so pending thumbnails can sit above the row.
+   Defined here (not by editing .chat__inputbar above) for the same reason. */
+.chat__inputbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-xs);
+}
+.chat__inputrow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-sm);
+}
+
+.chat__attach {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-round);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-lg);
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.chat__attach:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.chat__attach-error {
+  font-size: var(--fs-xs, 12px);
+  color: var(--danger, #e5484d);
+  padding: 0 2px;
+}
+
+/* Pending (not yet sent) thumbnails, above the textarea. */
+.chat__pending {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-xs);
+}
+.chat__chip {
+  position: relative;
+  width: 56px;
+  height: 56px;
+}
+.chat__chip-img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  display: block;
+}
+.chat__chip-img--empty {
+  background: var(--surface-3);
+}
+.chat__chip-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--r-round);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* Thumbnails inside a sent user bubble — above the text, right-aligned. */
+.bubble-atts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-xs);
+  margin-bottom: var(--sp-xs);
+  max-width: 85%;
+}
+.bubble-att {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  display: block;
+  cursor: pointer;
+}
+.bubble-att--empty {
+  background: var(--surface-3);
+}
+
+/* Tap-to-enlarge. Deliberately minimal: one image, tap anywhere to close —
+   the progress-photo viewer's paging/export/delete has no meaning here. */
+.chat-att-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--safe-top) 0 var(--safe-bottom);
+}
+.chat-att-viewer__close {
+  position: absolute;
+  top: calc(var(--safe-top) + var(--sp-sm));
+  right: var(--sp-md);
+  width: 36px;
+  height: 36px;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: var(--fs-xxl);
+  line-height: 1;
+  cursor: pointer;
+}
+.chat-att-viewer__img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}

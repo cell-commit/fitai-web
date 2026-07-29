@@ -17,6 +17,20 @@ import {
 } from '../storage';
 import type { ChatMessage, ChatMode } from '../../types';
 
+// The blob store backs attachment rehydration on retry.
+const blobs = vi.hoisted(() => ({ map: new Map<string, Blob>() }));
+
+vi.mock('../blobStore', () => ({
+  put: vi.fn(async (key: string, blob: Blob) => {
+    blobs.map.set(key, blob);
+  }),
+  get: vi.fn(async (key: string) => blobs.map.get(key) ?? null),
+  del: vi.fn(async (key: string) => {
+    blobs.map.delete(key);
+  }),
+  list: vi.fn(async () => Array.from(blobs.map.keys())),
+}));
+
 vi.mock('../coach', () => ({ sendCoachMessage: vi.fn() }));
 const { sendCoachMessage } = await import('../coach');
 const send = sendCoachMessage as unknown as Mock;
@@ -54,6 +68,7 @@ function successfulSend(reply = 'Here you go') {
 
 beforeEach(() => {
   localStorage.clear();
+  blobs.map.clear();
   resetSendRunningForTests();
   send.mockReset();
 });
@@ -269,5 +284,179 @@ describe('thread helpers', () => {
     const orphaned = [msg('user', 'a'), msg('assistant', 'b'), msg('user', 'c')];
     expect(stripOrphanUserTurn(orphaned, 'c')).toHaveLength(2);
     expect(stripOrphanUserTurn(orphaned, 'a')).toHaveLength(3);
+  });
+});
+
+// ── Photo attachments on an interrupted send ──────────────────
+
+/** Put an already-resized attachment blob in the store, as attach time would. */
+function storeAttachment(id: string): void {
+  blobs.map.set(`chat/${id}`, new Blob([new Uint8Array([7, 7])], {
+    type: 'image/jpeg',
+  }));
+}
+
+/** A user turn carrying attachments, persisted by the send before it died. */
+function photoMsg(id: string, text: string, attIds: string[]): ChatMessage {
+  return {
+    id,
+    mode: 'coach',
+    role: 'user',
+    text,
+    timestamp: ++seq,
+    attachments: attIds.map((a) => ({
+      id: a,
+      blobKey: `chat/${a}`,
+      mediaType: 'image/jpeg',
+    })),
+  };
+}
+
+describe('attachments survive an interrupted send', () => {
+  it('records the attachment ids and the message id when the send starts', async () => {
+    storeAttachment('a1');
+    send.mockImplementation(interruptedSend());
+
+    const outcome = await performCoachSend('coach', 'form check', [], 1, {
+      attachments: [{ id: 'a1', blobKey: 'chat/a1', mediaType: 'image/jpeg' }],
+    });
+
+    expect(outcome.status).toBe('failed');
+    const record = await getInflightSend();
+    expect(record?.attachmentIds).toEqual(['a1']);
+    expect(record?.messageId).toBeTruthy();
+    // The id on the record is the id the send used for the user turn.
+    expect(send.mock.calls[0][3].messageId).toBe(record?.messageId);
+  });
+
+  it('re-attaches the SAME images on retry, and keeps the blobs while doing it', async () => {
+    storeAttachment('a1');
+    storeAttachment('a2');
+    // What the interruption left behind: the user turn and the record.
+    await appendChatMessage(photoMsg('u1', 'form check', ['a1', 'a2']));
+    await saveInflightSend({
+      mode: 'coach',
+      text: 'form check',
+      startedAt: Date.now() - 60_000,
+      attempts: 1,
+      messageId: 'u1',
+      attachmentIds: ['a1', 'a2'],
+    });
+    send.mockImplementation(successfulSend('Elbows are flaring.'));
+
+    const outcome = await resumeInflightSend();
+
+    expect(outcome.status).toBe('retried');
+    // Same two images, in order, rehydrated from IndexedDB — not re-encoded.
+    const opts = send.mock.calls[0][3];
+    expect(opts.attachments.map((a: { id: string }) => a.id)).toEqual(['a1', 'a2']);
+    expect(opts.attachments[0].blobKey).toBe('chat/a1');
+    expect(opts.messageId).toBe('u1');
+    // stripOrphanUserTurn dropped the message but NOT the blobs.
+    expect(blobs.map.has('chat/a1')).toBe(true);
+    expect(blobs.map.has('chat/a2')).toBe(true);
+    // The orphan was not duplicated.
+    expect(send.mock.calls[0][2]).toEqual([]);
+  });
+
+  it('drops an attachment whose blob has been evicted rather than failing', async () => {
+    storeAttachment('a1'); // a2 is gone
+    await appendChatMessage(photoMsg('u1', 'form check', ['a1', 'a2']));
+    await saveInflightSend({
+      mode: 'coach',
+      text: 'form check',
+      startedAt: Date.now(),
+      attempts: 1,
+      messageId: 'u1',
+      attachmentIds: ['a1', 'a2'],
+    });
+    send.mockImplementation(successfulSend('ok'));
+
+    await resumeInflightSend();
+
+    expect(send.mock.calls[0][3].attachments.map((a: { id: string }) => a.id)).toEqual([
+      'a1',
+    ]);
+  });
+
+  it('matches by id, so a photo-only send is not mistaken for one already answered', async () => {
+    // An EARLIER photo-only turn (empty text) that did get a reply…
+    await appendChatMessage(photoMsg('u1', '', ['a1']));
+    await appendChatMessage(msg('assistant', 'Looking leaner.'));
+    // …and a new photo-only send that died before its turn was even persisted.
+    storeAttachment('a2');
+    await saveInflightSend({
+      mode: 'coach',
+      text: '',
+      startedAt: Date.now(),
+      attempts: 1,
+      messageId: 'u2',
+      attachmentIds: ['a2'],
+    });
+    send.mockImplementation(successfulSend('And now?'));
+
+    const outcome = await resumeInflightSend();
+
+    // Matching on the empty text would have found u1's reply and dropped this
+    // message silently. Matching on the id retries it.
+    expect(outcome.status).toBe('retried');
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][3].attachments).toHaveLength(1);
+  });
+
+  it('still resumes a legacy record written with no messageId', async () => {
+    // Written by the previously-installed version: text only, no ids.
+    await appendChatMessage(msg('user', 'drop RDLs'));
+    await saveInflightSend({
+      mode: 'coach',
+      text: 'drop RDLs',
+      startedAt: Date.now() - 60_000,
+      attempts: 1,
+    });
+    send.mockImplementation(successfulSend('Dropped them.'));
+
+    const outcome = await resumeInflightSend();
+
+    expect(outcome.status).toBe('retried');
+    expect(send.mock.calls[0][1]).toBe('drop RDLs');
+    expect(send.mock.calls[0][3].attachments).toEqual([]);
+    // Text fallback still strips the orphan → one user turn, one reply.
+    expect((await getChatMessages('coach')).map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+  });
+
+  it('skips the retry when a legacy record already has its reply (text fallback)', async () => {
+    await appendChatMessage(msg('user', 'drop RDLs'));
+    await appendChatMessage(msg('assistant', 'Done.'));
+    await saveInflightSend({
+      mode: 'coach',
+      text: 'drop RDLs',
+      startedAt: Date.now(),
+      attempts: 1,
+    });
+
+    expect((await resumeInflightSend()).status).toBe('already-complete');
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe('thread helpers — id matching', () => {
+  it('hasAssistantReplyFor uses the id when one is given', () => {
+    const thread = [photoMsg('u1', '', ['a1']), msg('assistant', 'nice')];
+    expect(hasAssistantReplyFor(thread, '', 'u1')).toBe(true);
+    expect(hasAssistantReplyFor(thread, '', 'u2')).toBe(false);
+    // Legacy (no id) falls back to the text.
+    expect(hasAssistantReplyFor(thread, '')).toBe(true);
+  });
+
+  it('stripOrphanUserTurn drops the turn by id and never touches blobs', () => {
+    storeAttachment('a1');
+    const thread = [msg('assistant', 'earlier'), photoMsg('u9', '', ['a1'])];
+
+    expect(stripOrphanUserTurn(thread, '', 'u9')).toHaveLength(1);
+    expect(stripOrphanUserTurn(thread, '', 'other')).toHaveLength(2);
+    expect(blobs.map.has('chat/a1')).toBe(true);
   });
 });

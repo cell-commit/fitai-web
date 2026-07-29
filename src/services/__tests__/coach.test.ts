@@ -1,15 +1,44 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
-import { sendCoachMessage } from '../coach';
+import { REPLAY_ATTACHMENT_TURNS, sendCoachMessage } from '../coach';
 import {
   saveSettings,
   saveWeeklyProgram,
   getWeeklyProgram,
   getPendingProgram,
+  getChatMessages,
 } from '../storage';
 import { getWeekStart } from '../../utils/date';
 import { weekDates } from '../program';
 import type { ClaudeResponse, ClaudeContentBlock } from '../claude';
-import type { ChatMessage, WeeklyProgram, DayFocus } from '../../types';
+import type {
+  ChatAttachment,
+  ChatMessage,
+  WeeklyProgram,
+  DayFocus,
+} from '../../types';
+
+// ── Mock the IndexedDB blob store (chat attachments read through it) ──
+
+const blobs = vi.hoisted(() => ({ map: new Map<string, Blob>() }));
+
+vi.mock('../blobStore', () => ({
+  put: vi.fn(async (key: string, blob: Blob) => {
+    blobs.map.set(key, blob);
+  }),
+  get: vi.fn(async (key: string) => blobs.map.get(key) ?? null),
+  del: vi.fn(async (key: string) => {
+    blobs.map.delete(key);
+  }),
+  list: vi.fn(async () => Array.from(blobs.map.keys())),
+}));
+
+/** Store a fake already-resized attachment blob and return its metadata. */
+function attachment(id: string): ChatAttachment {
+  blobs.map.set(`chat/${id}`, new Blob([new Uint8Array([9, 9, 9])], {
+    type: 'image/jpeg',
+  }));
+  return { id, blobKey: `chat/${id}`, mediaType: 'image/jpeg' };
+}
 
 // ── Mock driveSync (stateful cache + captured writes) ─────────
 
@@ -127,6 +156,7 @@ beforeEach(async () => {
   localStorage.clear();
   drive.cache.clear();
   drive.writes.length = 0;
+  blobs.map.clear();
   await saveSettings({
     calorieTarget: 2000,
     proteinTarget: 150,
@@ -328,5 +358,116 @@ describe('history trimming', () => {
     // Oldest kept is message 5 (35 - 30), newest before the current turn is 34.
     expect(body.messages[0].content).toBe('message 5');
     expect(body.messages[30].content).toContain('latest question');
+  });
+});
+
+// ── Photo attachments ─────────────────────────────────────────
+
+describe('chat photo attachments', () => {
+  it('sends image blocks FIRST and exactly one text block holding the context', async () => {
+    mockFetch.mockResolvedValueOnce(fetchReturning(textResponse('Elbows are flaring.')));
+
+    const atts = [attachment('a1'), attachment('a2')];
+    const res = await sendCoachMessage('coach', 'how is my bench form?', [], {
+      attachments: atts,
+    });
+
+    expect(res.assistantText).toBe('Elbows are flaring.');
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const content = body.messages[body.messages.length - 1]
+      .content as ClaudeContentBlock[];
+
+    expect(content.map((b) => b.type)).toEqual(['image', 'image', 'text']);
+    expect(content[0].source).toMatchObject({
+      type: 'base64',
+      media_type: 'image/jpeg',
+    });
+    // The <context> block stays INSIDE the single text block, after the images.
+    expect(content[2].text).toContain('<context>');
+    expect(content[2].text).toContain('how is my bench form?');
+    expect(content[2].text?.indexOf('<context>')).toBeLessThan(
+      content[2].text?.indexOf('how is my bench form?') ?? 0
+    );
+
+    // The attachments are persisted on the user turn (thumbnails in the bubble).
+    const thread = await getChatMessages('coach');
+    expect(thread[0].attachments?.map((a) => a.id)).toEqual(['a1', 'a2']);
+  });
+
+  it('does NOT replay images from history — the turn becomes a text note', async () => {
+    const history: ChatMessage[] = [
+      {
+        id: 'h1',
+        mode: 'coach',
+        role: 'user',
+        text: 'check my form',
+        timestamp: 1,
+        attachments: [attachment('old1')],
+      },
+      {
+        id: 'h2',
+        mode: 'coach',
+        role: 'assistant',
+        text: 'Elbows were flaring.',
+        timestamp: 2,
+      },
+    ];
+    mockFetch.mockResolvedValueOnce(fetchReturning(textResponse('Yes.')));
+
+    await sendCoachMessage('coach', 'better now?', history);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    // A 1024px image is ~1.5k input tokens; replaying it across the 30-turn
+    // window would silently multiply the cost of every later message.
+    expect(REPLAY_ATTACHMENT_TURNS).toBe(0);
+    expect(body.messages[0].content).toBe('check my form [1 photo — not re-sent]');
+    expect(JSON.stringify(body.messages.slice(0, -1))).not.toContain('base64');
+    // The current turn has no images either, so it stays a plain string.
+    expect(typeof body.messages[body.messages.length - 1].content).toBe('string');
+  });
+
+  it('synthesizes text for a photo-only send instead of an empty text block', async () => {
+    mockFetch.mockResolvedValueOnce(fetchReturning(textResponse('Looking leaner.')));
+
+    await sendCoachMessage('coach', '', [], {
+      attachments: [attachment('p1'), attachment('p2')],
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const content = body.messages[body.messages.length - 1]
+      .content as ClaudeContentBlock[];
+    const text = content[content.length - 1];
+
+    expect(text.type).toBe('text');
+    expect(text.text).toContain('(sent 2 photos)');
+    expect(text.text?.trim().length).toBeGreaterThan(0);
+
+    // The stored message keeps its empty text — the bubble shows the photos.
+    const thread = await getChatMessages('coach');
+    expect(thread[0].text).toBe('');
+    expect(thread[0].attachments).toHaveLength(2);
+  });
+
+  it('attaches images in nutrition mode too (a photo of a meal)', async () => {
+    mockFetch.mockResolvedValueOnce(fetchReturning(textResponse('~40g protein.')));
+
+    await sendCoachMessage('nutrition', '', [], {
+      attachments: [attachment('meal')],
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const content = body.messages[0].content as ClaudeContentBlock[];
+    expect(content.map((b) => b.type)).toEqual(['image', 'text']);
+    expect(content[1].text).toBe('(sent 1 photo)');
+  });
+
+  it('honours a caller-supplied message id (durability matches on it)', async () => {
+    mockFetch.mockResolvedValueOnce(fetchReturning(textResponse('ok')));
+
+    const res = await sendCoachMessage('coach', 'hi', [], { messageId: 'fixed-id' });
+
+    expect(res.userMessage.id).toBe('fixed-id');
+    expect((await getChatMessages('coach'))[0].id).toBe('fixed-id');
   });
 });
