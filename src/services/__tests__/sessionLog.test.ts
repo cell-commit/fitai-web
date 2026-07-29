@@ -4,6 +4,8 @@ import type {
   CheckIn,
   WeeklyProgram,
   PendingProgram,
+  LoggedSet,
+  LoggedExercise,
 } from '../../types';
 
 // Mock the two side-effecting collaborators so completeSession can be exercised
@@ -23,6 +25,9 @@ import {
   completeSession,
   formatSetsSummary,
   previousLine,
+  isSetDone,
+  placeholderForSet,
+  fillWeightForward,
   getSessionDraft,
   saveSessionDraft,
   clearSessionDraft,
@@ -200,6 +205,130 @@ describe('formatSetsSummary / previousLine', () => {
   });
 });
 
+// ── isSetDone (explicit ✓, backwards compatible) ──────────────
+
+describe('isSetDone', () => {
+  it('treats a legacy set with no `done` field as done when reps were logged', () => {
+    // Every historical log looks like this — it must keep counting as done.
+    expect(isSetDone({ reps: 10, weightKg: 40 })).toBe(true);
+    expect(isSetDone({ reps: 0, weightKg: 0 })).toBe(false);
+  });
+
+  it('honours the explicit flag in both directions', () => {
+    expect(isSetDone({ reps: 0, weightKg: 0, done: true })).toBe(true);
+    expect(isSetDone({ reps: 12, weightKg: 40, done: false })).toBe(false);
+  });
+});
+
+// ── placeholderForSet ─────────────────────────────────────────
+
+describe('placeholderForSet', () => {
+  function prevEx(sets: LoggedSet[]): LoggedExercise {
+    return { name: 'Leg Press', targetSets: 3, targetRepRange: '12-15', sets };
+  }
+
+  it('uses the matching set index when it exists and is done', () => {
+    const prev = prevEx([
+      { reps: 12, weightKg: 40 },
+      { reps: 10, weightKg: 42.5 },
+    ]);
+    expect(placeholderForSet(prev, 0)).toEqual({ reps: 12, weightKg: 40 });
+    expect(placeholderForSet(prev, 1)).toEqual({ reps: 10, weightKg: 42.5 });
+  });
+
+  it('falls back to the last done set when the previous exercise is shorter', () => {
+    const prev = prevEx([
+      { reps: 12, weightKg: 40 },
+      { reps: 10, weightKg: 45 },
+    ]);
+    // Row 3 and 4 of a longer session: reuse last week's final set.
+    expect(placeholderForSet(prev, 2)).toEqual({ reps: 10, weightKg: 45 });
+    expect(placeholderForSet(prev, 3)).toEqual({ reps: 10, weightKg: 45 });
+  });
+
+  it('ignores not-done sets at the exact index and never surfaces their values', () => {
+    const prev = prevEx([
+      { reps: 12, weightKg: 40 },
+      { reps: 0, weightKg: 0 }, // abandoned row — must not become a 0kg placeholder
+      { reps: 8, weightKg: 50, done: false }, // explicitly un-ticked
+    ]);
+    expect(placeholderForSet(prev, 1)).toEqual({ reps: 12, weightKg: 40 });
+    expect(placeholderForSet(prev, 2)).toEqual({ reps: 12, weightKg: 40 });
+  });
+
+  it('returns {} with no history at all', () => {
+    expect(placeholderForSet(null, 0)).toEqual({});
+    expect(placeholderForSet(prevEx([]), 0)).toEqual({});
+    expect(placeholderForSet(prevEx([{ reps: 0, weightKg: 0 }]), 0)).toEqual({});
+  });
+});
+
+// ── fillWeightForward ─────────────────────────────────────────
+
+describe('fillWeightForward', () => {
+  const none: ReadonlySet<number> = new Set();
+
+  it('fills only later, uncommitted rows and leaves earlier rows alone', () => {
+    const sets: LoggedSet[] = [
+      { reps: 12, weightKg: 40, done: true },
+      { reps: 0, weightKg: 0 },
+      { reps: 0, weightKg: 0 },
+    ];
+    const out = fillWeightForward(sets, 0, 40, none);
+    expect(out).toEqual([
+      { reps: 12, weightKg: 40, done: true },
+      { reps: 0, weightKg: 40 },
+      { reps: 0, weightKg: 40 },
+    ]);
+    // The source array is not mutated.
+    expect(sets[1].weightKg).toBe(0);
+  });
+
+  it('never touches rows at or before fromIdx, or rows already done', () => {
+    const sets: LoggedSet[] = [
+      { reps: 12, weightKg: 30, done: true },
+      { reps: 12, weightKg: 40, done: true },
+      { reps: 10, weightKg: 35, done: true }, // committed later row — untouched
+      { reps: 0, weightKg: 0 },
+    ];
+    const out = fillWeightForward(sets, 1, 40, none);
+    expect(out[0].weightKg).toBe(30);
+    expect(out[2].weightKg).toBe(35);
+    expect(out[3].weightKg).toBe(40);
+  });
+
+  it('respects the skip set (hand-edited rows keep their own number)', () => {
+    const sets: LoggedSet[] = [
+      { reps: 12, weightKg: 40, done: true },
+      { reps: 0, weightKg: 55 }, // he typed this himself
+      { reps: 0, weightKg: 0 },
+    ];
+    const out = fillWeightForward(sets, 0, 40, new Set([1]));
+    expect(out[1].weightKg).toBe(55);
+    expect(out[2].weightKg).toBe(40);
+  });
+
+  it('returns the same array reference when nothing changes', () => {
+    const alreadyFilled: LoggedSet[] = [
+      { reps: 12, weightKg: 40, done: true },
+      { reps: 0, weightKg: 40 },
+    ];
+    expect(fillWeightForward(alreadyFilled, 0, 40, none)).toBe(alreadyFilled);
+
+    // Last row: there is nothing after it to fill.
+    const lastRow: LoggedSet[] = [{ reps: 12, weightKg: 40, done: true }];
+    expect(fillWeightForward(lastRow, 0, 40, none)).toBe(lastRow);
+
+    // Every later row is either done or skipped.
+    const blocked: LoggedSet[] = [
+      { reps: 12, weightKg: 40, done: true },
+      { reps: 10, weightKg: 35, done: true },
+      { reps: 0, weightKg: 0 },
+    ];
+    expect(fillWeightForward(blocked, 0, 40, new Set([2]))).toBe(blocked);
+  });
+});
+
 // ── draft round-trip ──────────────────────────────────────────
 
 describe('session draft persistence', () => {
@@ -230,6 +359,28 @@ describe('session draft persistence', () => {
     expect(await getSessionDraft('2026-07-14')).toEqual(draft);
     await clearSessionDraft('2026-07-14');
     expect(await getSessionDraft('2026-07-14')).toBeNull();
+  });
+
+  it('round-trips the rest-timer and watch-nudge fields verbatim', async () => {
+    const draft: SessionDraft = {
+      date: '2026-07-18',
+      focus: 'legs',
+      startedAt: 1_000,
+      feedback: '',
+      restEndsAt: 1_234_567,
+      restSec: 90,
+      watchNudgeDismissed: true,
+      exercises: [
+        {
+          name: 'Squat',
+          targetSets: 2,
+          targetRepRange: '8-10',
+          sets: [{ reps: 8, weightKg: 60, done: true }, { reps: 0, weightKg: 60 }],
+        },
+      ],
+    };
+    await saveSessionDraft(draft);
+    expect(await getSessionDraft('2026-07-18')).toEqual(draft);
   });
 });
 

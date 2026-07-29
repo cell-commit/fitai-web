@@ -9,9 +9,10 @@
 // is persisted into the Coach chat thread so it shows in the Coach pane.
 //
 // The only canvas-dependent step (downscaling) is isolated behind an injectable
-// `resize` function (see __setImageOps) so unit tests can run without a real
-// canvas. Everything else — blob storage, base64, metadata, object-URL caching,
-// export — is plain DOM/JS and testable directly.
+// `resize` function (see __setImageOps, now in src/utils/imageOps.ts and
+// re-exported here) so unit tests can run without a real canvas. Everything
+// else — blob storage, base64, metadata, object-URL caching, export — is plain
+// DOM/JS and testable directly.
 
 import type { ProgressPhoto } from '../types';
 import {
@@ -30,6 +31,13 @@ import {
   deletePhoto as deletePhotoMeta,
   appendChatMessage,
 } from './storage';
+// Canvas-dependent resize + base64 now live in utils/imageOps so coach-chat
+// attachments share the exact same swappable seam. The hook and its type are
+// re-exported below so existing importers (and photos.test.ts) are unaffected.
+import { resize, blobToBase64, __setImageOps } from '../utils/imageOps';
+
+export { __setImageOps };
+export type { ResizeFn } from '../utils/imageOps';
 
 // ─────────────────────────────────────────────────────────────
 // Tuning
@@ -54,64 +62,6 @@ function thumbKey(id: string): string {
 
 function makeId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Injectable image ops (canvas isolation for tests)
-// ─────────────────────────────────────────────────────────────
-
-/** Downscale an image blob to a max long-edge, re-encoded as JPEG. */
-export type ResizeFn = (
-  input: Blob,
-  maxEdge: number,
-  quality: number
-) => Promise<Blob>;
-
-/**
- * Default canvas-based resize. Preserves aspect ratio; never upscales (scale is
- * capped at 1). Uses createImageBitmap (Safari 14.1+) + a 2D canvas → JPEG.
- */
-const canvasResize: ResizeFn = async (input, maxEdge, quality) => {
-  const bitmap = await createImageBitmap(input);
-  const srcW = bitmap.width;
-  const srcH = bitmap.height;
-  const scale = Math.min(1, maxEdge / Math.max(srcW, srcH));
-  const w = Math.max(1, Math.round(srcW * scale));
-  const h = Math.max(1, Math.round(srcH * scale));
-
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Could not get a 2D canvas context to resize the image.');
-  ctx.drawImage(bitmap, 0, 0, w, h);
-  bitmap.close?.();
-
-  return await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error('Image resize failed.'))),
-      'image/jpeg',
-      quality
-    );
-  });
-};
-
-let resize: ResizeFn = canvasResize;
-
-/** Test hook: override the canvas-dependent resize step. Pass {} to reset. */
-export function __setImageOps(ops: { resize?: ResizeFn }): void {
-  resize = ops.resize ?? canvasResize;
-}
-
-/** Base64-encode a blob's bytes (no data: prefix). Canvas-free, jsdom-safe. */
-async function blobToBase64(blob: Blob): Promise<string> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let binary = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
 }
 
 // ─────────────────────────────────────────────────────────────

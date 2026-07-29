@@ -57,12 +57,19 @@ export function formatPlannedDay(date: string): string {
 // pane's "last time" line so both read identically.
 // ─────────────────────────────────────────────────────────────
 
-/** A set counts as done once it has reps logged. */
+/**
+ * A set counts as done when it carries an explicit ✓, and otherwise once it has
+ * reps logged. The `done` flag is new (session UX upgrades) and optional, so
+ * every historical log — which has no flag at all — still resolves via the
+ * original `reps > 0` rule and renders byte-identically. This function is the
+ * single choke point for summaries, markdown and coach context; do not inline
+ * the check anywhere else.
+ */
 export function isSetDone(set: LoggedSet): boolean {
-  return set.reps > 0;
+  return set.done ?? set.reps > 0;
 }
 
-/** Count of done sets in an exercise (reps > 0). */
+/** Count of done sets in an exercise (see isSetDone). */
 export function doneSetCount(sets: LoggedSet[]): number {
   return sets.filter(isSetDone).length;
 }
@@ -86,6 +93,67 @@ export function previousLine(prev: LoggedExercise | null): string | null {
   if (!prev) return null;
   const summary = formatSetsSummary(prev.sets);
   return summary ? `Last: ${summary}` : null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Per-set helpers for the in-session UI (pure — no storage, no DOM).
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Last session's numbers for one set row, used as faint placeholders.
+ *
+ * Prefers the same set index in the previous logged instance; when that index
+ * is missing or wasn't actually done, falls back to the LAST done set (so a
+ * 4-set session still shows sensible numbers on row 4 after a 3-set week).
+ * Returns `{}` when there is no usable history — the caller must treat that as
+ * "no placeholder", never as zero.
+ *
+ * Only values from sets that count as done are ever surfaced, so an abandoned
+ * 0-rep row can't leak a 0 kg placeholder into next week's log.
+ */
+export function placeholderForSet(
+  prev: LoggedExercise | null,
+  idx: number
+): { reps?: number; weightKg?: number } {
+  if (!prev) return {};
+  const exact = prev.sets[idx];
+  if (exact && isSetDone(exact)) {
+    return { reps: exact.reps, weightKg: exact.weightKg };
+  }
+  for (let i = prev.sets.length - 1; i >= 0; i--) {
+    const s = prev.sets[i];
+    if (isSetDone(s)) return { reps: s.reps, weightKg: s.weightKg };
+  }
+  return {};
+}
+
+/**
+ * Apply a weight to every LATER set that has not been committed yet — "enter it
+ * once, fill it across the remaining sets".
+ *
+ * Rows at or before `fromIdx` are never touched, done rows are left alone
+ * (their weight is already history), and indices in `skip` are rows the user
+ * hand-edited, so his own number wins.
+ *
+ * Returns the SAME array reference when nothing changed, letting callers skip a
+ * pointless draft write (and the re-render it would cause).
+ */
+export function fillWeightForward(
+  sets: LoggedSet[],
+  fromIdx: number,
+  weightKg: number,
+  skip: ReadonlySet<number>
+): LoggedSet[] {
+  let changed = false;
+  const next = sets.map((set, i) => {
+    if (i <= fromIdx) return set;
+    if (isSetDone(set)) return set;
+    if (skip.has(i)) return set;
+    if (set.weightKg === weightKg) return set;
+    changed = true;
+    return { ...set, weightKg };
+  });
+  return changed ? next : sets;
 }
 
 function exerciseLine(ex: LoggedExercise): string | null {
@@ -165,6 +233,17 @@ export interface SessionDraft {
   startedAt: number;
   exercises: LoggedExercise[];
   feedback: string;
+  // ── Session UX upgrades (all optional; old drafts round-trip unchanged) ──
+  /**
+   * Epoch ms the running rest timer ends at, or null/absent when no rest is
+   * running. Stored as a timestamp, never a countdown, so a suspended page
+   * resumes with the correct remaining time.
+   */
+  restEndsAt?: number | null;
+  /** Length of the running rest period in seconds (for the ring / ±15s). */
+  restSec?: number;
+  /** True once the "start your Apple Watch workout" banner was dismissed. */
+  watchNudgeDismissed?: boolean;
 }
 
 // Drafts are stored as a map keyed by program-day date, so a session started
@@ -195,7 +274,9 @@ async function writeDraftMap(map: DraftMap): Promise<void> {
 }
 
 function hasLoggedSet(draft: SessionDraft): boolean {
-  return draft.exercises.some((ex) => ex.sets.some((s) => s.reps > 0));
+  // Goes through isSetDone so a ✓-ed set counts as in-progress work even when
+  // its reps field is still 0 (keeps otherDraftsInProgress honest).
+  return draft.exercises.some((ex) => ex.sets.some(isSetDone));
 }
 
 export async function getSessionDraft(

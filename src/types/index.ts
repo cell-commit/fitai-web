@@ -44,6 +44,15 @@ export interface Settings {
   anthropicApiKey?: string;
   appsScriptUrl?: string;
   appsScriptToken?: string;
+  // ── Session UX upgrades (WP-0 foundations) ──
+  // All optional so stored settings need no migration; DEFAULT_SETTINGS in
+  // storage.ts supplies the values and getSettings() spreads defaults first.
+  /** Rest-timer default length in seconds (rest timer between sets). */
+  restDefaultSec?: number;
+  /** Play the best-effort rest-end sound (silent switch may still mute it). */
+  restSoundEnabled?: boolean;
+  /** Show the "start your Apple Watch workout" nudge on a fresh session. */
+  watchReminderEnabled?: boolean;
 }
 
 export interface DayData {
@@ -138,6 +147,13 @@ export interface PendingProgram {
 export interface LoggedSet {
   reps: number;
   weightKg: number;
+  /**
+   * Explicit per-set ✓ (session UX upgrades). Optional and backwards-compatible:
+   * historical sets have no `done` flag, so isSetDone() falls back to reps > 0.
+   * A set marked done is the commit point for the rest timer, weight
+   * fill-forward and placeholder materialisation.
+   */
+  done?: boolean;
 }
 
 export interface LoggedExercise {
@@ -176,6 +192,21 @@ export interface ChatToolEvent {
   summary: string; // for UI chips: "Updated Wed plan"
 }
 
+/**
+ * An image attached to a coach-chat message (chat photo attachments upgrade).
+ * The thread holds references only — the blob itself lives in IndexedDB under
+ * `blobKey`, so localStorage never carries image bytes.
+ */
+export interface ChatAttachment {
+  id: string;
+  /** blobStore key, e.g. `chat/<id>`. */
+  blobKey: string;
+  /** MIME type of the stored blob, e.g. 'image/jpeg'. */
+  mediaType: string;
+  width?: number;
+  height?: number;
+}
+
 export interface ChatMessage {
   id: string;
   mode: ChatMode;
@@ -183,6 +214,8 @@ export interface ChatMessage {
   text: string;
   toolEvents?: ChatToolEvent[];
   timestamp: number;
+  /** Images attached to this message (chat photo attachments upgrade). */
+  attachments?: ChatAttachment[];
 }
 
 // Photos

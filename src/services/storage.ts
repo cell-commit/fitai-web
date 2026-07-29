@@ -52,6 +52,12 @@ const DEFAULT_SETTINGS: Settings = {
   calorieTarget: 2000,
   proteinTarget: 150,
   name: '',
+  // Session UX upgrades. getSettings() spreads DEFAULT_SETTINGS *before* the
+  // stored object, so settings saved before these existed pick the defaults up
+  // for free — no migration, and an explicitly saved `false` still wins.
+  restDefaultSec: 90,
+  restSoundEnabled: true,
+  watchReminderEnabled: true,
 };
 
 /** Normalize an exercise name for slug/name matching (lowercase, collapse space). */
@@ -390,6 +396,17 @@ export interface InflightCoachSend {
   startedAt: number;
   /** 1 for the original send, 2 for the single automatic retry. */
   attempts: number;
+  /**
+   * Attachment ids on the in-flight message, so a retry re-attaches the exact
+   * same images (chat photo attachments upgrade). Absent on legacy records.
+   */
+  attachmentIds?: string[];
+  /**
+   * The user message's id. Durability currently matches on the text string,
+   * which a photo-only send (empty text) can false-match; matching by id fixes
+   * that, with the text comparison kept as a fallback for legacy records.
+   */
+  messageId?: string;
 }
 
 export async function getInflightSend(): Promise<InflightCoachSend | null> {
