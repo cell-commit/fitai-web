@@ -75,6 +75,67 @@ type Phase = 'loading' | 'preview' | 'session' | 'done';
 const FALLBACK_REST_SEC = 90;
 
 /**
+ * Which set is "up next" — the one highlighted after a ✓, so the next thing to
+ * do is never ambiguous mid-workout. `token` bumps only when a commit MOVED it
+ * (never on load or on an undo), and the row uses that edge to scroll itself
+ * into view; a steady token means "highlight only, don't grab the screen".
+ */
+interface ActiveSet {
+  ex: number;
+  set: number;
+  token: number;
+}
+
+/** First set at or after `from` that has not been ✓-ed, or null. */
+function firstUncommitted(sets: LoggedSet[], from = 0): number | null {
+  for (let i = Math.max(0, from); i < sets.length; i++) {
+    if (sets[i].done !== true) return i;
+  }
+  return null;
+}
+
+/**
+ * Where the highlight goes after committing (exIdx, setIdx): the next
+ * uncommitted row of the same exercise, else an earlier one he skipped past,
+ * else the first uncommitted row of the next exercise with work left. Null when
+ * the whole session is committed.
+ */
+function nextActiveSet(
+  exercises: LoggedExercise[],
+  exIdx: number,
+  fromSetIdx: number
+): { ex: number; set: number } | null {
+  const own = exercises[exIdx]?.sets ?? [];
+  const ahead = firstUncommitted(own, fromSetIdx);
+  if (ahead !== null) return { ex: exIdx, set: ahead };
+  const behind = firstUncommitted(own, 0);
+  if (behind !== null) return { ex: exIdx, set: behind };
+  for (let i = exIdx + 1; i < exercises.length; i++) {
+    const j = firstUncommitted(exercises[i].sets);
+    if (j !== null) return { ex: i, set: j };
+  }
+  return null;
+}
+
+/**
+ * Should advancing the active set also move keyboard focus into its weight box?
+ *
+ * Only on a fine pointer (i.e. a desktop browser, where focus costs nothing).
+ * On the phone this is deliberately OFF: focusing a number input inside the ✓
+ * tap gesture pops the iOS keyboard over the bottom half of the screen after
+ * EVERY set — covering the rest pop-out and the row he just highlighted — and
+ * he then has to dismiss it to see anything. The highlight plus the smooth
+ * scroll carry the same "you're here now" message without hijacking the screen,
+ * and one tap on the highlighted box still opens the keyboard when he wants it.
+ */
+function shouldFocusNextSet(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return !window.matchMedia('(pointer: coarse)').matches;
+}
+
+/**
  * How long after a rest ended we still restore it on reload. A draft resumed the
  * next morning must not open with "Rest done · 14:22:07 over".
  */
@@ -159,6 +220,9 @@ export function SessionRunner({
   const [restSec, setRestSec] = useState<number>(FALLBACK_REST_SEC);
   const [showWatchNudge, setShowWatchNudge] = useState(false);
   const [watchNudgeDismissed, setWatchNudgeDismissed] = useState(false);
+  /** The highlighted "do this next" set. Purely presentational — deliberately
+   *  NOT part of the draft, so it can never resurrect a stale highlight. */
+  const [active, setActive] = useState<ActiveSet | null>(null);
   const [wake, setWake] = useState<{ supported: boolean; granted: boolean }>({
     supported: false,
     granted: false,
@@ -202,6 +266,11 @@ export function SessionRunner({
     );
     setPrevious(prev);
     const resuming = !!draft && draft.exercises.length > 0;
+    // Highlight the first thing left to do — token 0, so nothing scrolls or
+    // steals focus just because the screen mounted.
+    const working = resuming ? draft!.exercises : fresh;
+    const start = nextActiveSet(working, 0, 0);
+    setActive(start ? { ...start, token: 0 } : null);
     if (draft && resuming) {
       setExercises(draft.exercises);
       setFeedback(draft.feedback);
@@ -382,7 +451,9 @@ export function SessionRunner({
    *      getLastLoggedExercise;
    *   2. flags `done` (so a genuine 0-rep set still counts);
    *   3. fills the weight forward to later uncommitted rows;
-   *   4. starts the rest timer, and primes audio off this user gesture.
+   *   4. starts the rest timer, and primes audio off this user gesture;
+   *   5. moves the highlight onto the next set to do (next row, or the first
+   *      unfinished row of the next exercise, which scrolls itself into view).
    */
   function commitSet(exIdx: number, setIdx: number) {
     const ex = exercises[exIdx];
@@ -391,12 +462,15 @@ export function SessionRunner({
     void primeAudio();
 
     if (set.done) {
-      // Un-commit: keep the numbers, drop the ✓, stop the rest.
+      // Un-commit: keep the numbers, drop the ✓, stop the rest. The highlight
+      // comes back to this row (same token — he is looking at it already, so
+      // there is nothing to scroll to).
       updateExercise(exIdx, (cur) => ({
         ...cur,
         sets: cur.sets.map((s, j) => (j === setIdx ? { ...s, done: false } : s)),
       }));
       setRestEndsAt(null);
+      setActive((prev) => ({ ex: exIdx, set: setIdx, token: prev?.token ?? 0 }));
       return;
     }
 
@@ -414,6 +488,21 @@ export function SessionRunner({
           : committed;
       return { ...cur, sets };
     });
+
+    // Advance the highlight off the row just committed. Computed against the
+    // post-commit shape rather than `exercises` (still the pre-commit render).
+    const after = exercises.map((e, i) =>
+      i !== exIdx
+        ? e
+        : {
+            ...e,
+            sets: e.sets.map((s, j) => (j === setIdx ? { ...s, done: true } : s)),
+          }
+    );
+    const nxt = nextActiveSet(after, exIdx, setIdx + 1);
+    setActive((prev) =>
+      nxt ? { ...nxt, token: (prev?.token ?? 0) + 1 } : null
+    );
 
     startRest();
   }
@@ -584,24 +673,23 @@ export function SessionRunner({
         {header}
 
         {showWatchNudge && (
-          <div className="watch-nudge">
-            <div className="watch-nudge__text">
-              ⌚️ Start the workout on your Watch too.
-            </div>
-            <div className="watch-nudge__actions">
+          <div className="watch-bar">
+            <span className="watch-bar__text">⌚️ Start on your Watch</span>
+            <span className="watch-bar__actions">
               <button
-                className="btn btn--ghost btn--inline"
+                className="watch-bar__btn"
                 onClick={() => dismissWatchNudge(false)}
               >
-                Started ✓
+                Started
               </button>
               <button
-                className="btn btn--ghost btn--inline watch-nudge__never"
+                className="watch-bar__btn watch-bar__btn--quiet"
                 onClick={() => dismissWatchNudge(true)}
+                aria-label="Don’t remind me about the Watch"
               >
-                Don’t remind me
+                Never
               </button>
-            </div>
+            </span>
           </div>
         )}
 
@@ -646,6 +734,8 @@ export function SessionRunner({
               onFillForward={() => fillForward(exIdx, 0)}
               onAddSet={() => addSet(exIdx)}
               onRemoveSet={(setIdx) => removeSet(exIdx, setIdx)}
+              activeSet={active?.ex === exIdx ? active.set : null}
+              advanceToken={active?.ex === exIdx ? active.token : 0}
             />
           ))}
         </div>
@@ -653,18 +743,21 @@ export function SessionRunner({
         {error && <div className="banner banner--error">{error}</div>}
       </div>
 
-      {/* Sticky finish footer — the rest timer rides above the button so it is
-          always in view, whatever he has scrolled to. */}
+      {/* The rest countdown floats over the session as a circular pop-out
+          (upper-right, clear of the row he is working on) rather than living in
+          the footer, so it is readable at arm's length from the rack. */}
+      {restEndsAt !== null && !finishing && (
+        <RestTimer
+          endsAt={restEndsAt}
+          restSec={restSec}
+          onAdjust={adjustRest}
+          onSkip={() => setRestEndsAt(null)}
+          soundEnabled={settings?.restSoundEnabled !== false}
+        />
+      )}
+
+      {/* Sticky finish footer. */}
       <div className="finish-footer">
-        {restEndsAt !== null && !finishing && (
-          <RestTimer
-            endsAt={restEndsAt}
-            restSec={restSec}
-            onAdjust={adjustRest}
-            onSkip={() => setRestEndsAt(null)}
-            soundEnabled={settings?.restSoundEnabled !== false}
-          />
-        )}
         {!finishing ? (
           <button className="btn" onClick={() => setFinishing(true)}>
             Finish session
@@ -919,6 +1012,8 @@ function ExerciseCard({
   onFillForward,
   onAddSet,
   onRemoveSet,
+  activeSet,
+  advanceToken,
 }: {
   ex: LoggedExercise;
   previous: LoggedExercise | null;
@@ -927,14 +1022,13 @@ function ExerciseCard({
   onFillForward: () => void;
   onAddSet: () => void;
   onRemoveSet: (setIdx: number) => void;
+  /** Index of the highlighted "next up" row, or null when it is elsewhere. */
+  activeSet: number | null;
+  /** Bumps when a ✓ moved the highlight here — the active row scrolls itself in. */
+  advanceToken: number;
 }) {
   const done = doneSetCount(ex.sets);
   const last = previousLine(previous);
-  // "→ all sets" only makes sense once row 1 has a weight and there is a later
-  // row that could take it.
-  const firstWeight = ex.sets[0]?.weightKg ?? 0;
-  const showFill =
-    firstWeight > 0 && ex.sets.slice(1).some((s) => !isSetDone(s));
 
   return (
     <div className="card ex-card">
@@ -955,30 +1049,26 @@ function ExerciseCard({
       <div className="set-rows">
         <div className="set-row set-row--header">
           <span className="set-row__idx">Set</span>
-          <span className="set-row__weight-label">Weight (kg)</span>
+          <span className="set-row__weight-label">kg</span>
           <span className="set-row__reps-label">Reps</span>
           <span className="set-row__remove-label" />
           <span className="set-row__remove-label" />
         </div>
         {ex.sets.map((set, i) => (
-          <div key={i}>
-            <SetRow
-              index={i}
-              set={set}
-              placeholder={placeholderForSet(previous, i)}
-              done={isSetDone(set)}
-              committed={set.done === true}
-              onChange={(patch) => onUpdateSet(i, patch)}
-              onCommit={() => onCommitSet(i)}
-              onWeightBlur={i === 0 ? onFillForward : undefined}
-              onRemove={ex.sets.length > 1 ? () => onRemoveSet(i) : undefined}
-            />
-            {i === 0 && showFill && (
-              <button className="set-row__fill" onClick={onFillForward}>
-                → Use {firstWeight}kg for all sets
-              </button>
-            )}
-          </div>
+          <SetRow
+            key={i}
+            index={i}
+            set={set}
+            placeholder={placeholderForSet(previous, i)}
+            done={isSetDone(set)}
+            committed={set.done === true}
+            active={activeSet === i}
+            advanceToken={advanceToken}
+            onChange={(patch) => onUpdateSet(i, patch)}
+            onCommit={() => onCommitSet(i)}
+            onWeightBlur={i === 0 ? onFillForward : undefined}
+            onRemove={ex.sets.length > 1 ? () => onRemoveSet(i) : undefined}
+          />
         ))}
       </div>
 
@@ -995,6 +1085,8 @@ function SetRow({
   placeholder,
   done,
   committed,
+  active,
+  advanceToken,
   onChange,
   onCommit,
   onWeightBlur,
@@ -1007,6 +1099,10 @@ function SetRow({
   done: boolean;
   /** True when the ✓ was actually tapped (vs. done inferred from reps). */
   committed: boolean;
+  /** This is the "do this next" row. */
+  active: boolean;
+  /** Changes when a ✓ moved the highlight; the newly active row scrolls in. */
+  advanceToken: number;
   onChange: (patch: Partial<LoggedSet>) => void;
   onCommit: () => void;
   onWeightBlur?: () => void;
@@ -1017,11 +1113,31 @@ function SetRow({
   const weightGhost = weightEmpty && placeholder.weightKg !== undefined;
   const repsGhost = repsEmpty && placeholder.reps !== undefined;
 
+  const rowRef = useRef<HTMLDivElement>(null);
+  const weightRef = useRef<HTMLInputElement>(null);
+
+  // Keyed on the token alone: it changes exactly once per ✓-driven advance, so
+  // this can't fire on mount, on a re-render or when he undoes a set. Only the
+  // row that IS the new active one reacts. scrollIntoView is optional-called —
+  // jsdom does not implement it.
+  useEffect(() => {
+    if (!active || advanceToken === 0) return;
+    rowRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    if (shouldFocusNextSet()) weightRef.current?.focus?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [advanceToken]);
+
   return (
-    <div className={`set-row${done ? ' set-row--done' : ''}`}>
+    <div
+      ref={rowRef}
+      className={`set-row${done ? ' set-row--done' : ''}${
+        committed ? ' set-row--committed' : ''
+      }${active ? ' set-row--active' : ''}`}
+    >
       <span className="set-row__idx">{index + 1}</span>
 
       <input
+        ref={weightRef}
         className={`input set-row__weight${
           weightGhost ? ' set-row__input--ghost' : ''
         }`}

@@ -88,6 +88,22 @@ function tickButtons(exerciseIdx = 0): HTMLButtonElement[] {
   );
 }
 
+/** The floating rest pop-out, or null when no rest is running. */
+function restPop(): HTMLElement | null {
+  return document.querySelector('.rest-pop');
+}
+
+/** "exerciseIdx:setIdx" of the highlighted next-up row, or null. */
+function activeRow(): string | null {
+  const cards = Array.from(document.querySelectorAll('.ex-card'));
+  for (let i = 0; i < cards.length; i++) {
+    const rows = Array.from(cards[i].querySelectorAll('.set-row'));
+    const j = rows.findIndex((r) => r.classList.contains('set-row--active'));
+    if (j >= 0) return `${i}:${j - 1}`; // row 0 is the header row
+  }
+  return null;
+}
+
 /**
  * Freeze Date.now() so the timers can be driven deterministically. Returns an
  * `advance` that also fires visibilitychange — useTicker re-reads the clock on
@@ -337,11 +353,11 @@ describe('SessionRunner — the ✓ commit', () => {
     renderRunner();
     await screen.findByText('Bench Press');
     await userEvent.click(tickButtons(0)[0]);
-    await screen.findByText('Rest');
+    await waitFor(() => expect(restPop()).not.toBeNull());
 
     await userEvent.click(tickButtons(0)[0]);
 
-    await waitFor(() => expect(screen.queryByText('Rest')).toBeNull());
+    await waitFor(() => expect(restPop()).toBeNull());
     expect(document.querySelectorAll('.set-row--done')).toHaveLength(0);
     // The numbers he can see are kept — only the ✓ goes away.
     expect(weightInputs(0)[0]).toHaveValue(60);
@@ -407,17 +423,82 @@ describe('SessionRunner — weight fill-forward', () => {
     expect(weightInputs(0)[2]).toHaveValue(70);
   });
 
-  it('offers a "→ all sets" affordance once row 1 has a weight', async () => {
+  // WAS: a full-width "→ Use 60kg for all sets" button under row 1. Removed —
+  // the ✓ (and a plain blur of row 1) already fills forward, so the button was
+  // a second way to do the same thing eating a row of screen.
+  it('no longer shows a "use for all sets" button', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
-    expect(screen.queryByText(/Use .* for all sets/)).toBeNull();
 
     await userEvent.type(weightInputs(0)[0], '60');
-    const fill = await screen.findByText('→ Use 60kg for all sets');
-    await userEvent.click(fill);
 
-    await waitFor(() => expect(weightInputs(0)[1]).toHaveValue(60));
-    expect(weightInputs(0)[2]).toHaveValue(60);
+    expect(screen.queryByText(/for all sets/)).toBeNull();
+    expect(document.querySelector('.set-row__fill')).toBeNull();
+  });
+});
+
+describe('SessionRunner — the active set advances on ✓', () => {
+  it('starts on the first set and moves to the next row on each ✓', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await waitFor(() => expect(activeRow()).toBe('0:0'));
+
+    await userEvent.click(tickButtons(0)[0]);
+    await waitFor(() => expect(activeRow()).toBe('0:1'));
+
+    await userEvent.click(tickButtons(0)[1]);
+    await waitFor(() => expect(activeRow()).toBe('0:2'));
+  });
+
+  it('committing the last set advances to the first set of the next exercise', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+
+    await userEvent.click(tickButtons(0)[0]);
+    await userEvent.click(tickButtons(0)[1]);
+    await userEvent.click(tickButtons(0)[2]);
+
+    await waitFor(() => expect(activeRow()).toBe('1:0'));
+    // Committed rows are dimmed/marked so only the active one is bright.
+    expect(document.querySelectorAll('.set-row--committed')).toHaveLength(3);
+  });
+
+  it('undoing a ✓ brings the highlight back to that row', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+
+    await userEvent.click(tickButtons(0)[0]);
+    await waitFor(() => expect(activeRow()).toBe('0:1'));
+
+    await userEvent.click(tickButtons(0)[0]);
+    await waitFor(() => expect(activeRow()).toBe('0:0'));
+  });
+
+  it('opens on the first unfinished set of a resumed draft', async () => {
+    await saveSessionDraft({
+      date: DAY.date,
+      focus: 'push',
+      startedAt: Date.now() - 600_000,
+      feedback: '',
+      exercises: [
+        {
+          name: 'Bench Press',
+          slug: 'bench-press',
+          targetSets: 3,
+          targetRepRange: '8-10',
+          sets: [
+            { reps: 10, weightKg: 60, done: true },
+            { reps: 9, weightKg: 60, done: true },
+            { reps: 0, weightKg: 60 },
+          ],
+        },
+      ],
+    });
+
+    renderRunner();
+    await screen.findByText('Bench Press');
+
+    await waitFor(() => expect(activeRow()).toBe('0:2'));
   });
 });
 
@@ -436,10 +517,53 @@ describe('SessionRunner — rest timer', () => {
 
     await clock.advance(29_000);
     expect(screen.getByText('Rest done')).toBeInTheDocument();
-    expect(screen.getByText(/0:14 over/)).toBeInTheDocument();
+    expect(screen.getByText('+0:14')).toBeInTheDocument();
+    expect(restPop()).toHaveClass('rest-pop--over');
   });
 
-  it('±15s adjusts the countdown and Skip clears it', async () => {
+  it('pops out as a circle over the session, and tapping it skips the rest', async () => {
+    const clock = useFrozenClock();
+    renderRunner();
+    await screen.findByText('Bench Press');
+
+    await userEvent.click(tickButtons(0)[0]);
+
+    const pop = await waitFor(() => {
+      const el = restPop();
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    // The reference layout: hint, configured length, live countdown, ± flanks.
+    expect(pop.querySelector('.rest-pop__hint')).toHaveTextContent('Tap to Skip');
+    expect(pop.querySelector('.rest-pop__total')).toHaveTextContent('Rest: 1:30min');
+    expect(pop.querySelector('.rest-pop__clock')).toHaveTextContent('1:30');
+    expect(pop.querySelector('.rest-pop__ring')).not.toBeNull();
+    // It is NOT in the finish footer any more.
+    expect(document.querySelector('.finish-footer .rest-pop')).toBeNull();
+
+    await userEvent.click(screen.getByLabelText('Skip rest'));
+    await waitFor(() => expect(restPop()).toBeNull());
+    await clock.advance(0);
+  });
+
+  it('the ring depletes as the rest runs', async () => {
+    const clock = useFrozenClock();
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await userEvent.click(tickButtons(0)[0]);
+    await screen.findByText('1:30');
+
+    const ring = () => document.querySelector('.rest-pop__ring-fill')!;
+    const offsetAt = () => Number(ring().getAttribute('stroke-dashoffset'));
+    const full = Number(ring().getAttribute('stroke-dasharray'));
+    expect(offsetAt()).toBeCloseTo(0, 1); // nothing elapsed → ring complete
+
+    await clock.advance(45_000);
+    expect(offsetAt()).toBeGreaterThan(full * 0.4);
+    expect(offsetAt()).toBeLessThan(full * 0.6);
+  });
+
+  it('±15s adjusts the countdown and tapping the circle clears it', async () => {
     const clock = useFrozenClock();
     renderRunner();
     await screen.findByText('Bench Press');
@@ -454,8 +578,8 @@ describe('SessionRunner — rest timer', () => {
     await clock.advance(0);
     expect(screen.getByText('1:30')).toBeInTheDocument();
 
-    await userEvent.click(screen.getByText('Skip'));
-    await waitFor(() => expect(screen.queryByText('Rest')).toBeNull());
+    await userEvent.click(screen.getByLabelText('Skip rest'));
+    await waitFor(() => expect(restPop()).toBeNull());
   });
 
   it('persists the running rest in the draft and restores it on reload', async () => {
@@ -498,7 +622,7 @@ describe('SessionRunner — rest timer', () => {
     renderRunner();
     await screen.findByText('Bench Press');
 
-    expect(screen.queryByText('Rest')).toBeNull();
+    expect(restPop()).toBeNull();
     expect(screen.queryByText('Rest done')).toBeNull();
   });
 });
@@ -548,13 +672,25 @@ describe('SessionRunner — session timer', () => {
 });
 
 describe('SessionRunner — Apple Watch nudge', () => {
-  const NUDGE = /Start the workout on your Watch too/;
+  const NUDGE = /Start on your Watch/;
 
-  it('shows on a fresh session and goes away on "Started ✓"', async () => {
+  it('renders as a bar (not a card) at the top of the session', async () => {
+    renderRunner();
+    await screen.findByText(NUDGE);
+
+    const bar = document.querySelector('.watch-bar');
+    expect(bar).not.toBeNull();
+    // Both actions live inline on the bar, and the old card is gone.
+    expect(bar!.querySelectorAll('.watch-bar__btn')).toHaveLength(2);
+    expect(document.querySelector('.watch-nudge')).toBeNull();
+    expect(bar!.classList.contains('card')).toBe(false);
+  });
+
+  it('shows on a fresh session and goes away on "Started"', async () => {
     renderRunner();
 
     expect(await screen.findByText(NUDGE)).toBeInTheDocument();
-    await userEvent.click(screen.getByText('Started ✓'));
+    await userEvent.click(screen.getByText('Started'));
 
     await waitFor(() => expect(screen.queryByText(NUDGE)).toBeNull());
     // Dismissal is recorded in the draft so a mid-session reload stays quiet.
@@ -566,7 +702,7 @@ describe('SessionRunner — Apple Watch nudge', () => {
   it('does not come back after a reload once dismissed', async () => {
     renderRunner();
     await screen.findByText(NUDGE);
-    await userEvent.click(screen.getByText('Started ✓'));
+    await userEvent.click(screen.getByText('Started'));
     await waitFor(async () =>
       expect((await getSessionDraft(DAY.date))?.watchNudgeDismissed).toBe(true)
     );
@@ -600,11 +736,11 @@ describe('SessionRunner — Apple Watch nudge', () => {
     expect(screen.queryByText(NUDGE)).toBeNull();
   });
 
-  it('"Don\'t remind me" persists the setting and suppresses it next session', async () => {
+  it('"Never" persists the setting and suppresses it next session', async () => {
     renderRunner();
     await screen.findByText(NUDGE);
 
-    await userEvent.click(screen.getByText('Don’t remind me'));
+    await userEvent.click(screen.getByText('Never'));
 
     await waitFor(async () =>
       expect((await getSettings()).watchReminderEnabled).toBe(false)
@@ -624,7 +760,7 @@ describe('SessionRunner — Apple Watch nudge', () => {
 // ─────────────────────────────────────────────────────────────
 
 describe('SessionRunner — start gate', () => {
-  const NUDGE = /Start the workout on your Watch too/;
+  const NUDGE = /Start on your Watch/;
 
   /** Install a fake Screen Wake Lock API and return its request spy. */
   function stubWakeLock() {

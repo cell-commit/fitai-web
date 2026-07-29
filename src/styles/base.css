@@ -797,11 +797,15 @@ a {
 }
 
 .set-row {
-  /* Weight first and flexible (room for e.g. 112.5), reps stepper compact */
+  /* The weight box is FIXED and compact (fits "112.5" and no more) — the slack
+   * it used to hog goes to the touch targets instead: the reps stepper takes
+   * the flexible column and the ✓ gets a wide fixed one (see the override in
+   * the "Session timers / commit" block below). Everything is ≥44px tall so
+   * every control is a comfortable thumb target at 375px. */
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto 22px;
+  grid-template-columns: 18px 72px minmax(0, 1fr) 22px;
   align-items: center;
-  gap: var(--sp-xs);
+  gap: 5px;
 }
 
 .set-row--header {
@@ -833,13 +837,13 @@ a {
 .stepper {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
 }
 
 .stepper__btn {
-  width: 34px;
-  height: 40px;
+  width: 42px;
+  height: 46px;
   flex-shrink: 0;
   border-radius: var(--r-sm);
   background: var(--surface-3);
@@ -857,9 +861,12 @@ a {
 }
 
 .stepper__input {
-  width: 52px;
-  flex: none;
-  height: 40px;
+  /* Flexible so the stepper absorbs whatever the fixed columns leave, rather
+   * than overflowing the card on a narrow phone. */
+  width: auto;
+  flex: 1 1 44px;
+  min-width: 36px;
+  height: 46px;
   text-align: center;
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -876,19 +883,23 @@ a {
 }
 
 .set-row__weight {
-  height: 40px;
-  padding: 0 var(--sp-sm);
+  height: 46px;
+  padding: 0 4px;
   text-align: center;
+  font-size: var(--fs-md);
   font-variant-numeric: tabular-nums;
 }
 
+/* Reachable, but deliberately quiet — removing a set is not what he is here
+ * to do. Full row height, so it is still an easy hit. */
 .set-row__remove {
   width: 22px;
-  height: 40px;
+  height: 46px;
   background: none;
   border: none;
   color: var(--text-muted);
-  font-size: var(--fs-xl);
+  opacity: 0.65;
+  font-size: var(--fs-lg);
   line-height: 1;
 }
 
@@ -960,19 +971,21 @@ a {
  * Apple Watch nudge. Kept beside the .set-row / .finish-footer rules above
  * because it extends them (the set row gains a ✓ column). */
 
-/* The ✓ column sits between the reps stepper and the remove ×. */
+/* The ✓ column sits between the reps stepper and the remove ×: idx | kg |
+ * reps stepper | ✓ | ×. Fixed columns total 158px + 20px of gaps, leaving the
+ * stepper ~131px at 375px — enough for two 42px buttons and a 41px input. */
 .set-row {
-  grid-template-columns: 22px minmax(0, 1fr) auto 32px 22px;
+  grid-template-columns: 18px 72px minmax(0, 1fr) 46px 22px;
 }
 
 .set-row__tick {
-  width: 32px;
-  height: 40px;
+  width: 46px;
+  height: 46px;
   border-radius: var(--r-sm);
   background: var(--surface-3);
   border: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   line-height: 1;
   display: flex;
   align-items: center;
@@ -990,6 +1003,29 @@ a {
   color: var(--success);
 }
 
+/* Where he is NOW: the row the last ✓ handed him. Faint teal wash (bled past
+ * the row with a matching ring so it reads as one block) plus accented borders
+ * on the two inputs he is about to touch. */
+.set-row--active {
+  background: var(--accent-glow);
+  box-shadow: 0 0 0 6px var(--accent-glow);
+  border-radius: var(--r-sm);
+}
+
+.set-row--active .set-row__idx {
+  color: var(--accent);
+}
+
+.set-row--active .set-row__weight,
+.set-row--active .stepper__input {
+  border-color: var(--accent);
+}
+
+/* Sets already banked recede, so the active row is the only bright thing. */
+.set-row--committed {
+  opacity: 0.62;
+}
+
 /* Last session's numbers: guidance, never data. Faint enough that an empty
  * field can't be mistaken for a logged one. */
 .set-row__input--ghost::placeholder {
@@ -998,91 +1034,136 @@ a {
   font-style: italic;
 }
 
-/* "→ Use 60kg for all sets", directly under row 1. */
-.set-row__fill {
-  margin-top: var(--sp-xs);
-  margin-left: 26px;
-  padding: 2px 0;
-  background: none;
-  border: none;
-  color: var(--accent);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  text-align: left;
+/* ── Rest timer: a floating circular pop-out ────────────────
+ * Fixed to the upper-right of the content column so it never sits on the row
+ * he is working (which is centred by the active-set scroll), never reaches the
+ * finish footer or the tab bar, and is legible from a few steps away. Tapping
+ * the face skips; −15 / +15 flank the countdown. */
+.rest-pop {
+  position: fixed;
+  /* High enough that the circle clears the watch bar's buttons (it would
+   * otherwise swallow taps meant for them) and every set row below it. */
+  top: calc(var(--safe-top) + 48px);
+  /* Hugs the right edge of the 640px content column on wide screens, and the
+   * viewport gutter on a phone. */
+  right: max(var(--sp-md), calc(50% - 320px + var(--sp-md)));
+  width: 156px;
+  height: 156px;
+  /* Above the finish footer (15), below the tab bar (20). */
+  z-index: 18;
 }
 
-/* ── Rest timer (inside .finish-footer, above the button) ── */
-.rest-timer {
-  margin-bottom: var(--sp-sm);
-}
-
-.rest-timer__bar {
-  height: 3px;
-  border-radius: var(--r-round);
-  background: var(--surface-3);
-  overflow: hidden;
-  margin-bottom: var(--sp-xs);
-}
-
-.rest-timer__bar-fill {
+.rest-pop__ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
   height: 100%;
-  background: var(--accent);
-  border-radius: var(--r-round);
-  transition: width 0.4s linear;
+  /* Deplete from 12 o'clock. */
+  transform: rotate(-90deg);
 }
 
-.rest-timer__row {
+.rest-pop__ring-track {
+  fill: none;
+  stroke: var(--surface-3);
+  stroke-width: 5;
+}
+
+.rest-pop__ring-fill {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 5;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.5s linear;
+}
+
+.rest-pop--over .rest-pop__ring-fill {
+  stroke: var(--success);
+  transition: none;
+}
+
+.rest-pop__face {
+  position: absolute;
+  inset: 6px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-sm);
+  justify-content: center;
+  gap: 1px;
+  /* Keeps the readout inside the corridor between the ±15 buttons. */
+  padding: 0 38px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
-.rest-timer__read {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-xs);
-  min-width: 0;
-}
-
-.rest-timer__label {
-  font-size: var(--fs-xs);
-  color: var(--text-secondary);
+.rest-pop__hint {
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--text-muted);
 }
 
-.rest-timer__clock {
-  font-size: var(--fs-lg);
+.rest-pop__total {
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.rest-pop__clock {
+  font-size: var(--fs-xl);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--accent);
+  line-height: 1.1;
 }
 
-.rest-timer--over .rest-timer__bar-fill {
-  background: var(--success);
-}
-
-.rest-timer--over .rest-timer__clock {
-  color: var(--success);
-  font-size: var(--fs-sm);
-}
-
-.rest-timer--over .rest-timer__label {
+.rest-pop--over .rest-pop__total {
   color: var(--success);
   font-weight: 700;
 }
 
-.rest-timer__actions {
-  display: flex;
-  gap: var(--sp-xs);
-  flex-shrink: 0;
+.rest-pop--over .rest-pop__clock {
+  color: var(--success);
 }
 
-.rest-timer__btn {
-  padding: var(--sp-xs) var(--sp-sm);
+/* ±15s, flanking the countdown left and right (siblings of the face, so a tap
+ * on one never skips the rest). */
+.rest-pop__adjust {
+  position: absolute;
+  /* Level with the big countdown, which sits below the two label lines. */
+  top: 58%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
   font-size: var(--fs-xs);
-  width: auto;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  z-index: 1;
+}
+
+.rest-pop__adjust:active {
+  color: var(--accent);
+}
+
+.rest-pop__adjust--minus {
+  left: 5px;
+}
+
+.rest-pop__adjust--plus {
+  right: 5px;
 }
 
 /* ── Session clock + wake-lock line ── */
@@ -1120,36 +1201,50 @@ a {
   min-width: 0;
 }
 
-/* ── Apple Watch nudge (a banner, never a modal) ── */
-.watch-nudge {
+/* ── Apple Watch nudge — a bar, never a card or a modal ──
+ * Same treatment as .finish-footer (translucent slate, hairline rules, the
+ * same padding rhythm) but in flow: it scrolls away with the content instead
+ * of sticking, and it full-bleeds out of the pane's padding so it reads as a
+ * bar across the top of the session rather than a box above the first card. */
+.watch-bar {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: var(--sp-sm);
   justify-content: space-between;
-  margin-top: var(--sp-md);
+  gap: var(--sp-sm);
+  margin: 0 calc(-1 * var(--sp-md)) var(--sp-md);
   padding: var(--sp-sm) var(--sp-md);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  background: rgba(15, 23, 42, 0.94);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
-.watch-nudge__text {
+.watch-bar__text {
   font-size: var(--fs-sm);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.watch-nudge__actions {
+.watch-bar__actions {
   display: flex;
+  align-items: center;
   gap: var(--sp-xs);
+  flex-shrink: 0;
 }
 
-.watch-nudge__actions .btn {
+.watch-bar__btn {
   padding: var(--sp-xs) var(--sp-sm);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
   font-size: var(--fs-xs);
-  width: auto;
+  font-weight: 600;
 }
 
-.watch-nudge__never {
+.watch-bar__btn--quiet {
+  border-color: transparent;
   color: var(--text-muted);
 }
 
