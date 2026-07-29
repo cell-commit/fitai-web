@@ -7,11 +7,14 @@ import type {
   LoggedSet,
   SessionLog,
   CheckIn,
+  Settings,
 } from '../types';
 import {
   getCheckIn,
   saveCheckIn,
   getLastLoggedExercise,
+  getSettings,
+  saveSettings,
   getTodayDate,
   formatDisplayDate,
 } from '../services/storage';
@@ -23,6 +26,9 @@ import {
   formatPlannedDay,
   previousLine,
   doneSetCount,
+  isSetDone,
+  placeholderForSet,
+  fillWeightForward,
   type SessionDraft,
   type CompleteSessionResult,
 } from '../services/sessionLog';
@@ -30,6 +36,10 @@ import { ExerciseImage } from './ExerciseImage';
 import { ChevronRightIcon } from './icons';
 import { Markdown } from './Markdown';
 import { ClampText } from './ClampText';
+import { RestTimer } from './RestTimer';
+import { SessionTimer } from './SessionTimer';
+import { acquireWakeLock, type WakeLockHandle } from '../utils/wakeLock';
+import { primeAudio } from '../utils/sound';
 
 interface SessionRunnerProps {
   /** The program day to execute (today's, or any day launched from the Week view). */
@@ -46,8 +56,18 @@ interface SessionRunnerProps {
 
 type Phase = 'loading' | 'session' | 'done';
 
-/** Build fresh working exercises from a program day, prefilling weights from the
- * previous logged instance of each exercise (same set index, else its last set). */
+/** Fallback rest length when Settings has none (matches DEFAULT_SETTINGS). */
+const FALLBACK_REST_SEC = 90;
+
+/**
+ * How long after a rest ended we still restore it on reload. A draft resumed the
+ * next morning must not open with "Rest done · 14:22:07 over".
+ */
+const REST_RESTORE_GRACE_MS = 5 * 60 * 1000;
+
+/** Build fresh working exercises from a program day. Weights are left EMPTY —
+ * last session's numbers are shown as per-set placeholders instead (see
+ * placeholderForSet), so an untouched row can never log a real-looking weight. */
 async function buildInitialExercises(
   day: ProgramDay
 ): Promise<{ exercises: LoggedExercise[]; previous: (LoggedExercise | null)[] }> {
@@ -56,19 +76,18 @@ async function buildInitialExercises(
   for (const pe of day.exercises) {
     const prev = await getLastLoggedExercise(pe.slug ?? pe.name);
     previous.push(prev);
-    exercises.push(programExerciseToLogged(pe, prev));
+    exercises.push(programExerciseToLogged(pe));
   }
   return { exercises, previous };
 }
 
-function programExerciseToLogged(
-  pe: ProgramExercise,
-  prev: LoggedExercise | null
-): LoggedExercise {
-  const lastWeight = prev?.sets.length ? prev.sets[prev.sets.length - 1].weightKg : 0;
-  const sets: LoggedSet[] = Array.from({ length: Math.max(1, pe.sets) }, (_, i) => ({
+function programExerciseToLogged(pe: ProgramExercise): LoggedExercise {
+  // Deliberately zero, not prefilled: a prefilled weight is indistinguishable
+  // from one he actually lifted. The previous numbers appear as greyed
+  // placeholders, and the ✓ materialises them into real values.
+  const sets: LoggedSet[] = Array.from({ length: Math.max(1, pe.sets) }, () => ({
     reps: 0,
-    weightKg: prev?.sets[i]?.weightKg ?? lastWeight,
+    weightKg: 0,
   }));
   return {
     name: pe.name,
@@ -82,11 +101,14 @@ function programExerciseToLogged(
 
 /**
  * The reusable set-by-set workout runner: exercise cards with image / target /
- * "last time" line, per-set reps stepper + kg input prefilled from the previous
- * session, add/remove set, a sticky "Finish session" footer → feedback sheet →
- * completeSession, and a "Session done ✓" summary. Draft-persisted (keyed by the
- * program day's date) so an in-progress session survives a reload. Used by the
- * Today pane and launchable from any day in the Week view.
+ * "last time" line, per-set reps stepper + kg input showing last session's
+ * numbers as faint placeholders, a per-set ✓ that commits the row and starts the
+ * rest timer, add/remove set, a sticky "Finish session" footer → feedback sheet
+ * → completeSession, and a "Session done ✓" summary. Also owns the session
+ * clock, the screen wake lock and the Apple Watch nudge. Draft-persisted (keyed
+ * by the program day's date) so an in-progress session — including a running
+ * rest — survives a reload. Used by the Today pane and launchable from any day
+ * in the Week view.
  */
 export function SessionRunner({
   programDay,
@@ -101,10 +123,33 @@ export function SessionRunner({
   const [exercises, setExercises] = useState<LoggedExercise[]>([]);
   const [previous, setPrevious] = useState<(LoggedExercise | null)[]>([]);
   const [feedback, setFeedback] = useState('');
-  const startedAtRef = useRef<number>(Date.now());
+  /** Session start (epoch ms). State rather than a ref because the session clock
+   *  renders it and the "Restart timer" escape hatch changes it — it moves at
+   *  most twice per session, so the draft-persist effect stays quiet. */
+  const [startedAt, setStartedAt] = useState<number>(() => Date.now());
 
   // Readiness (CheckIn) — keyed by the actual performance date (today).
   const [checkIn, setCheckIn] = useState<CheckIn | null>(null);
+
+  // ── Session UX upgrades ──────────────────────────────────────
+  const [settings, setSettings] = useState<Settings | null>(null);
+  /** Epoch ms the running rest ends at. Changes ONLY on ✓ / ±15s / Skip — the
+   *  per-second tick lives inside RestTimer so the draft effect never sees it. */
+  const [restEndsAt, setRestEndsAt] = useState<number | null>(null);
+  const [restSec, setRestSec] = useState<number>(FALLBACK_REST_SEC);
+  const [showWatchNudge, setShowWatchNudge] = useState(false);
+  const [watchNudgeDismissed, setWatchNudgeDismissed] = useState(false);
+  const [wake, setWake] = useState<{ supported: boolean; granted: boolean }>({
+    supported: false,
+    granted: false,
+  });
+  /**
+   * Set indices whose weight he typed himself, per exercise index — fill-forward
+   * must not stomp them. Ephemeral on purpose: after a reload we cannot tell a
+   * hand-typed weight from a filled one, and silently remembering a stale "don't
+   * touch" list would be worse than re-filling a row he can see and correct.
+   */
+  const editedWeights = useRef<Map<number, Set<number>>>(new Map());
 
   // Finish flow
   const [finishing, setFinishing] = useState(false);
@@ -123,7 +168,12 @@ export function SessionRunner({
 
   async function load() {
     hydrated.current = false;
+    editedWeights.current = new Map();
     if (showReadiness) setCheckIn(await getCheckIn(today));
+
+    const stored = await getSettings();
+    setSettings(stored);
+    const defaultRest = stored.restDefaultSec ?? FALLBACK_REST_SEC;
 
     // Resume an in-progress draft, else build a fresh session.
     const draft = await getSessionDraft(programDay.date);
@@ -131,18 +181,63 @@ export function SessionRunner({
       programDay
     );
     setPrevious(prev);
-    if (draft && draft.exercises.length > 0) {
+    const resuming = !!draft && draft.exercises.length > 0;
+    if (draft && resuming) {
       setExercises(draft.exercises);
       setFeedback(draft.feedback);
-      startedAtRef.current = draft.startedAt;
+      setStartedAt(draft.startedAt);
+      setRestSec(draft.restSec ?? defaultRest);
+      // Only restore a rest that is still running or only just finished.
+      const endsAt = draft.restEndsAt ?? null;
+      setRestEndsAt(
+        endsAt && Date.now() - endsAt < REST_RESTORE_GRACE_MS ? endsAt : null
+      );
+      setWatchNudgeDismissed(draft.watchNudgeDismissed === true);
     } else {
       setExercises(fresh);
       setFeedback('');
-      startedAtRef.current = Date.now();
+      setStartedAt(Date.now());
+      setRestSec(defaultRest);
+      setRestEndsAt(null);
+      setWatchNudgeDismissed(false);
     }
+
+    // Watch nudge: fresh sessions only. A mid-session reload (anything already
+    // logged, or a banner he already dismissed) must not put it back on screen.
+    const alreadyWorking =
+      resuming && draft!.exercises.some((ex) => ex.sets.some(isSetDone));
+    setShowWatchNudge(
+      stored.watchReminderEnabled !== false &&
+        !alreadyWorking &&
+        draft?.watchNudgeDismissed !== true
+    );
+
     setPhase('session');
     hydrated.current = true;
   }
+
+  // Keep the screen awake for the whole session (item: "keep screen on").
+  // The `cancelled` flag matters: acquireWakeLock is async, so an unmount while
+  // it is in flight would otherwise leave a sentinel held with no owner.
+  useEffect(() => {
+    if (phase !== 'session') return;
+    let cancelled = false;
+    let handle: WakeLockHandle | null = null;
+    void (async () => {
+      const lock = await acquireWakeLock();
+      if (cancelled) {
+        void lock.release();
+        return;
+      }
+      handle = lock;
+      setWake({ supported: lock.supported, granted: lock.granted });
+    })();
+    return () => {
+      cancelled = true;
+      void handle?.release();
+      setWake({ supported: false, granted: false });
+    };
+  }, [phase]);
 
   // Persist the draft whenever the working session changes (survives reload).
   // Keyed by the program day's date so different days don't clobber each other.
@@ -151,14 +246,48 @@ export function SessionRunner({
     const draft: SessionDraft = {
       date: programDay.date,
       focus: programDay.focus,
-      startedAt: startedAtRef.current,
+      startedAt,
       exercises,
       feedback,
+      restEndsAt,
+      restSec,
+      watchNudgeDismissed,
     };
     void saveSessionDraft(draft);
-  }, [exercises, feedback, phase, programDay.date, programDay.focus]);
+    // NOTE: every dep here must be a value that changes on a user action, never
+    // on a clock tick — this effect writes localStorage each time it runs. The
+    // rest countdown ticks inside RestTimer for exactly this reason, and there
+    // is a regression test asserting 60s of rest causes zero extra writes.
+  }, [
+    exercises,
+    feedback,
+    phase,
+    programDay.date,
+    programDay.focus,
+    restEndsAt,
+    restSec,
+    startedAt,
+    watchNudgeDismissed,
+  ]);
 
   // ── Set mutations ──────────────────────────────────────────
+
+  /** Replace one exercise; returns the same array when `fn` changed nothing, so
+   *  React bails out and the draft-persist effect doesn't fire pointlessly. */
+  function updateExercise(
+    exIdx: number,
+    fn: (ex: LoggedExercise) => LoggedExercise
+  ) {
+    setExercises((prev) => {
+      const cur = prev[exIdx];
+      if (!cur) return prev;
+      const next = fn(cur);
+      if (next === cur) return prev;
+      const out = [...prev];
+      out[exIdx] = next;
+      return out;
+    });
+  }
 
   function updateSet(exIdx: number, setIdx: number, patch: Partial<LoggedSet>) {
     setExercises((prev) =>
@@ -171,6 +300,103 @@ export function SessionRunner({
             }
       )
     );
+  }
+
+  function editedFor(exIdx: number): Set<number> {
+    let s = editedWeights.current.get(exIdx);
+    if (!s) {
+      s = new Set<number>();
+      editedWeights.current.set(exIdx, s);
+    }
+    return s;
+  }
+
+  /** Remember a hand-typed weight on a later row so fill-forward leaves it be. */
+  function markWeightEdited(exIdx: number, setIdx: number) {
+    if (setIdx > 0) editedFor(exIdx).add(setIdx);
+  }
+
+  /** Copy row `fromIdx`'s weight onto every later uncommitted, un-hand-edited row. */
+  function fillForward(exIdx: number, fromIdx: number) {
+    updateExercise(exIdx, (ex) => {
+      const weightKg = ex.sets[fromIdx]?.weightKg ?? 0;
+      if (weightKg <= 0) return ex;
+      const sets = fillWeightForward(ex.sets, fromIdx, weightKg, editedFor(exIdx));
+      return sets === ex.sets ? ex : { ...ex, sets };
+    });
+  }
+
+  // ── The ✓ commit ───────────────────────────────────────────
+
+  /**
+   * Mark a set done (or undo it). This is the one moment in the session that
+   * means "that set happened", so it does four things at once:
+   *   1. materialises the greyed placeholder into REAL reps/weight — without
+   *      this an untouched row would log 0 kg and poison next week's
+   *      getLastLoggedExercise;
+   *   2. flags `done` (so a genuine 0-rep set still counts);
+   *   3. fills the weight forward to later uncommitted rows;
+   *   4. starts the rest timer, and primes audio off this user gesture.
+   */
+  function commitSet(exIdx: number, setIdx: number) {
+    const ex = exercises[exIdx];
+    const set = ex?.sets[setIdx];
+    if (!set) return;
+    void primeAudio();
+
+    if (set.done) {
+      // Un-commit: keep the numbers, drop the ✓, stop the rest.
+      updateExercise(exIdx, (cur) => ({
+        ...cur,
+        sets: cur.sets.map((s, j) => (j === setIdx ? { ...s, done: false } : s)),
+      }));
+      setRestEndsAt(null);
+      return;
+    }
+
+    const ph = placeholderForSet(previous[exIdx] ?? null, setIdx);
+    const reps = set.reps > 0 ? set.reps : ph.reps ?? 0;
+    const weightKg = set.weightKg > 0 ? set.weightKg : ph.weightKg ?? 0;
+
+    updateExercise(exIdx, (cur) => {
+      const committed = cur.sets.map((s, j) =>
+        j === setIdx ? { ...s, reps, weightKg, done: true } : s
+      );
+      const sets =
+        weightKg > 0
+          ? fillWeightForward(committed, setIdx, weightKg, editedFor(exIdx))
+          : committed;
+      return { ...cur, sets };
+    });
+
+    startRest();
+  }
+
+  // ── Rest timer ─────────────────────────────────────────────
+
+  function startRest() {
+    const secs = settings?.restDefaultSec ?? FALLBACK_REST_SEC;
+    setRestSec(secs);
+    setRestEndsAt(Date.now() + secs * 1000);
+  }
+
+  function adjustRest(deltaSec: number) {
+    setRestEndsAt((prev) => (prev === null ? prev : prev + deltaSec * 1000));
+    setRestSec((prev) => Math.max(15, prev + deltaSec));
+  }
+
+  // ── Watch nudge ────────────────────────────────────────────
+
+  /** Both buttons double as the user gesture that unlocks iOS audio. */
+  function dismissWatchNudge(stopReminding: boolean) {
+    void primeAudio();
+    setShowWatchNudge(false);
+    setWatchNudgeDismissed(true);
+    if (stopReminding && settings) {
+      const next: Settings = { ...settings, watchReminderEnabled: false };
+      setSettings(next);
+      void saveSettings(next);
+    }
   }
 
   function addSet(exIdx: number) {
@@ -215,11 +441,11 @@ export function SessionRunner({
     setSubmitting(true);
     setError(null);
     const log: SessionLog = {
-      id: `${today}-${startedAtRef.current}`,
+      id: `${today}-${startedAt}`,
       date: today,
       focus: programDay.focus,
       exercises,
-      startedAt: startedAtRef.current,
+      startedAt,
       completedAt: Date.now(),
       feedback: feedback.trim() || undefined,
       syncedToDrive: false,
@@ -271,6 +497,43 @@ export function SessionRunner({
       <div className="pane pane--session">
         {header}
 
+        {showWatchNudge && (
+          <div className="watch-nudge">
+            <div className="watch-nudge__text">
+              ⌚️ Start the workout on your Watch too.
+            </div>
+            <div className="watch-nudge__actions">
+              <button
+                className="btn btn--ghost btn--inline"
+                onClick={() => dismissWatchNudge(false)}
+              >
+                Started ✓
+              </button>
+              <button
+                className="btn btn--ghost btn--inline watch-nudge__never"
+                onClick={() => dismissWatchNudge(true)}
+              >
+                Don’t remind me
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="session-status">
+          <SessionTimer
+            startedAt={startedAt}
+            onRestart={() => setStartedAt(Date.now())}
+          />
+          {wake.supported && wake.granted && (
+            <span className="session-status__wake">Screen staying on</span>
+          )}
+          {wake.supported && !wake.granted && (
+            <span className="session-status__wake">
+              Screen may sleep — set Auto-Lock to Never.
+            </span>
+          )}
+        </div>
+
         {showReadiness && (
           <ReadinessCard checkIn={checkIn} onChange={updateReadiness} />
         )}
@@ -289,7 +552,12 @@ export function SessionRunner({
               key={`${ex.name}-${exIdx}`}
               ex={ex}
               previous={previous[exIdx] ?? null}
-              onUpdateSet={(setIdx, patch) => updateSet(exIdx, setIdx, patch)}
+              onUpdateSet={(setIdx, patch) => {
+                if (patch.weightKg !== undefined) markWeightEdited(exIdx, setIdx);
+                updateSet(exIdx, setIdx, patch);
+              }}
+              onCommitSet={(setIdx) => commitSet(exIdx, setIdx)}
+              onFillForward={() => fillForward(exIdx, 0)}
               onAddSet={() => addSet(exIdx)}
               onRemoveSet={(setIdx) => removeSet(exIdx, setIdx)}
             />
@@ -299,8 +567,18 @@ export function SessionRunner({
         {error && <div className="banner banner--error">{error}</div>}
       </div>
 
-      {/* Sticky finish footer */}
+      {/* Sticky finish footer — the rest timer rides above the button so it is
+          always in view, whatever he has scrolled to. */}
       <div className="finish-footer">
+        {restEndsAt !== null && !finishing && (
+          <RestTimer
+            endsAt={restEndsAt}
+            restSec={restSec}
+            onAdjust={adjustRest}
+            onSkip={() => setRestEndsAt(null)}
+            soundEnabled={settings?.restSoundEnabled !== false}
+          />
+        )}
         {!finishing ? (
           <button className="btn" onClick={() => setFinishing(true)}>
             Finish session
@@ -517,17 +795,26 @@ function ExerciseCard({
   ex,
   previous,
   onUpdateSet,
+  onCommitSet,
+  onFillForward,
   onAddSet,
   onRemoveSet,
 }: {
   ex: LoggedExercise;
   previous: LoggedExercise | null;
   onUpdateSet: (setIdx: number, patch: Partial<LoggedSet>) => void;
+  onCommitSet: (setIdx: number) => void;
+  onFillForward: () => void;
   onAddSet: () => void;
   onRemoveSet: (setIdx: number) => void;
 }) {
   const done = doneSetCount(ex.sets);
   const last = previousLine(previous);
+  // "→ all sets" only makes sense once row 1 has a weight and there is a later
+  // row that could take it.
+  const firstWeight = ex.sets[0]?.weightKg ?? 0;
+  const showFill =
+    firstWeight > 0 && ex.sets.slice(1).some((s) => !isSetDone(s));
 
   return (
     <div className="card ex-card">
@@ -551,16 +838,27 @@ function ExerciseCard({
           <span className="set-row__weight-label">Weight (kg)</span>
           <span className="set-row__reps-label">Reps</span>
           <span className="set-row__remove-label" />
+          <span className="set-row__remove-label" />
         </div>
         {ex.sets.map((set, i) => (
-          <SetRow
-            key={i}
-            index={i}
-            set={set}
-            done={set.reps > 0}
-            onChange={(patch) => onUpdateSet(i, patch)}
-            onRemove={ex.sets.length > 1 ? () => onRemoveSet(i) : undefined}
-          />
+          <div key={i}>
+            <SetRow
+              index={i}
+              set={set}
+              placeholder={placeholderForSet(previous, i)}
+              done={isSetDone(set)}
+              committed={set.done === true}
+              onChange={(patch) => onUpdateSet(i, patch)}
+              onCommit={() => onCommitSet(i)}
+              onWeightBlur={i === 0 ? onFillForward : undefined}
+              onRemove={ex.sets.length > 1 ? () => onRemoveSet(i) : undefined}
+            />
+            {i === 0 && showFill && (
+              <button className="set-row__fill" onClick={onFillForward}>
+                → Use {firstWeight}kg for all sets
+              </button>
+            )}
+          </div>
         ))}
       </div>
 
@@ -574,29 +872,49 @@ function ExerciseCard({
 function SetRow({
   index,
   set,
+  placeholder,
   done,
+  committed,
   onChange,
+  onCommit,
+  onWeightBlur,
   onRemove,
 }: {
   index: number;
   set: LoggedSet;
+  /** Last session's numbers for this row — rendered as faint guidance only. */
+  placeholder: { reps?: number; weightKg?: number };
   done: boolean;
+  /** True when the ✓ was actually tapped (vs. done inferred from reps). */
+  committed: boolean;
   onChange: (patch: Partial<LoggedSet>) => void;
+  onCommit: () => void;
+  onWeightBlur?: () => void;
   onRemove?: () => void;
 }) {
+  const weightEmpty = set.weightKg === 0;
+  const repsEmpty = set.reps === 0;
+  const weightGhost = weightEmpty && placeholder.weightKg !== undefined;
+  const repsGhost = repsEmpty && placeholder.reps !== undefined;
+
   return (
     <div className={`set-row${done ? ' set-row--done' : ''}`}>
       <span className="set-row__idx">{index + 1}</span>
 
       <input
-        className="input set-row__weight"
+        className={`input set-row__weight${
+          weightGhost ? ' set-row__input--ghost' : ''
+        }`}
         type="number"
         inputMode="decimal"
         min={0}
         step="0.5"
-        value={set.weightKg === 0 ? '' : set.weightKg}
-        placeholder="0"
+        value={weightEmpty ? '' : set.weightKg}
+        placeholder={
+          placeholder.weightKg !== undefined ? String(placeholder.weightKg) : '0'
+        }
         onChange={(e) => onChange({ weightKg: Math.max(0, Number(e.target.value) || 0) })}
+        onBlur={onWeightBlur}
         aria-label={`Set ${index + 1} weight`}
       />
 
@@ -609,12 +927,14 @@ function SetRow({
           −
         </button>
         <input
-          className="stepper__input"
+          className={`stepper__input${repsGhost ? ' set-row__input--ghost' : ''}`}
           type="number"
           inputMode="numeric"
           min={0}
-          value={set.reps === 0 ? '' : set.reps}
-          placeholder="0"
+          value={repsEmpty ? '' : set.reps}
+          placeholder={
+            placeholder.reps !== undefined ? String(placeholder.reps) : '0'
+          }
           onChange={(e) => onChange({ reps: Math.max(0, Number(e.target.value) || 0) })}
           aria-label={`Set ${index + 1} reps`}
         />
@@ -626,6 +946,17 @@ function SetRow({
           +
         </button>
       </div>
+
+      <button
+        className={`set-row__tick${committed ? ' set-row__tick--on' : ''}`}
+        onClick={onCommit}
+        aria-pressed={committed}
+        aria-label={
+          committed ? `Undo set ${index + 1}` : `Mark set ${index + 1} done`
+        }
+      >
+        ✓
+      </button>
 
       {onRemove ? (
         <button

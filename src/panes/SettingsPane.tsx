@@ -20,7 +20,14 @@ function fmtSyncTime(ms: number | null): string {
   return new Date(ms).toLocaleString();
 }
 
-const EMPTY: Settings = { calorieTarget: 2000, proteinTarget: 150, name: '' };
+const EMPTY: Settings = {
+  calorieTarget: 2000,
+  proteinTarget: 150,
+  name: '',
+  restDefaultSec: 90,
+  restSoundEnabled: true,
+  watchReminderEnabled: true,
+};
 
 export function SettingsPane() {
   const [settings, setSettings] = useState<Settings>(EMPTY);
@@ -139,6 +146,57 @@ export function SettingsPane() {
           Deploy guide: docs/apps-script/README.md.
         </p>
       </div>
+
+      <div className="section-label">Workout</div>
+
+      <div className="field">
+        <label className="field__label" htmlFor="rest-default">
+          Rest timer default (seconds)
+        </label>
+        <input
+          id="rest-default"
+          className="input"
+          type="number"
+          inputMode="numeric"
+          min={15}
+          step={15}
+          value={settings.restDefaultSec ?? 90}
+          onChange={(e) =>
+            update('restDefaultSec', Math.max(15, Number(e.target.value) || 0))
+          }
+        />
+        <p className="field__hint">
+          Starts automatically when you tick a set off. You can add or take 15s
+          during the rest, or skip it.
+        </p>
+      </div>
+
+      <label className="field-check">
+        <input
+          type="checkbox"
+          checked={settings.restSoundEnabled !== false}
+          onChange={(e) => update('restSoundEnabled', e.target.checked)}
+        />
+        <span>Sound when the rest ends</span>
+      </label>
+      <p className="field__hint">
+        Best-effort only, and the countdown on screen is the real alert: iPhone
+        mutes it when the ringer switch is off, and nothing can play while the
+        app is in the background or the screen is locked. There is no vibration
+        option because iOS Safari has no vibration API at all.
+      </p>
+
+      <label className="field-check">
+        <input
+          type="checkbox"
+          checked={settings.watchReminderEnabled !== false}
+          onChange={(e) => update('watchReminderEnabled', e.target.checked)}
+        />
+        <span>Remind me to start my Apple Watch workout</span>
+      </label>
+      <p className="field__hint">
+        A dismissible banner at the top of a fresh session.
+      </p>
 
       <div className="section-label">Targets</div>
 
