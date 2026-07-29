@@ -21,9 +21,10 @@
 //   • a module-level flag makes a resume-retry a no-op while a real request is
 //     still running in this tab, so nothing double-sends.
 
-import type { ChatMessage, ChatMode } from '../types';
+import type { ChatAttachment, ChatMessage, ChatMode } from '../types';
 import { isTransientClaudeError } from './claude';
 import { sendCoachMessage } from './coach';
+import { rehydrateAttachments } from './chatAttachments';
 import {
   clearInflightSend,
   getChatMessages,
@@ -53,13 +54,30 @@ export function resetSendRunningForTests(): void {
   running = false;
 }
 
-export type SendOutcome =
-  | { status: 'ok' }
-  | { status: 'busy' }
-  | { status: 'failed'; error: Error; transient: boolean };
+export interface SendFailed {
+  status: 'failed';
+  error: Error;
+  transient: boolean;
+  /** Ids of the turn that failed, so the UI can retry it exactly. */
+  messageId?: string;
+  attachmentIds?: string[];
+}
+
+export type SendOutcome = { status: 'ok' } | { status: 'busy' } | SendFailed;
 
 function toError(e: unknown): Error {
   return e instanceof Error ? e : new Error(String(e));
+}
+
+function makeMessageId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Attachment options threaded through a send or a retry. */
+export interface CoachSendOptions {
+  attachments?: ChatAttachment[];
+  /** Reuse an existing user-message id (a retry keeps the original turn's id). */
+  messageId?: string;
 }
 
 /**
@@ -67,42 +85,72 @@ function toError(e: unknown): Error {
  * the call and cleared on success. A non-transient failure (bad key, rate limit,
  * refusal) also clears it — those must not be retried automatically. A transient
  * failure keeps the record so the resume path can retry once.
+ *
+ * The user message's id is generated HERE, before the call, and handed to
+ * sendCoachMessage. That is what lets the record identify the turn without
+ * relying on its text (see hasAssistantReplyFor).
  */
 export async function performCoachSend(
   mode: ChatMode,
   text: string,
   history: ChatMessage[],
-  attempt = 1
+  attempt = 1,
+  opts: CoachSendOptions = {}
 ): Promise<SendOutcome> {
   if (running) return { status: 'busy' };
   running = true;
-  await saveInflightSend({ mode, text, startedAt: Date.now(), attempts: attempt });
+  const messageId = opts.messageId ?? makeMessageId();
+  const attachments = opts.attachments ?? [];
+  const attachmentIds = attachments.map((a) => a.id);
+  await saveInflightSend({
+    mode,
+    text,
+    startedAt: Date.now(),
+    attempts: attempt,
+    messageId,
+    ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+  });
   try {
-    await sendCoachMessage(mode, text, history);
+    await sendCoachMessage(mode, text, history, { attachments, messageId });
     await clearInflightSend();
     return { status: 'ok' };
   } catch (e) {
     const error = toError(e);
     const transient = isTransientClaudeError(error);
     if (!transient) await clearInflightSend();
-    return { status: 'failed', error, transient };
+    return {
+      status: 'failed',
+      error,
+      transient,
+      messageId,
+      ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+    };
   } finally {
     running = false;
   }
 }
 
 /**
- * True when an assistant turn exists after the last user turn with this text —
- * i.e. the request we thought died actually completed.
+ * True when an assistant turn exists after the user turn we sent — i.e. the
+ * request we thought died actually completed.
+ *
+ * Matching by id, not text: a photo-only message has EMPTY text, which would
+ * match the wrong turn (or every other empty turn) and either skip a retry that
+ * was needed or pay for one that was not. `messageId` is absent only on records
+ * written by a previously-installed version, where the text comparison is still
+ * the best available signal.
  */
 export function hasAssistantReplyFor(
   thread: ChatMessage[],
-  text: string
+  text: string,
+  messageId?: string
 ): boolean {
   let lastUserIdx = -1;
   for (let i = thread.length - 1; i >= 0; i--) {
     const m = thread[i];
-    if (m.role === 'user' && m.text === text) {
+    if (m.role !== 'user') continue;
+    const hit = messageId ? m.id === messageId : m.text === text;
+    if (hit) {
       lastUserIdx = i;
       break;
     }
@@ -112,50 +160,91 @@ export function hasAssistantReplyFor(
 }
 
 /**
- * Drop the trailing, unanswered user turn for `text` if present. sendCoachMessage
- * persists the user turn before calling the API, so an interrupted send leaves an
- * orphan at the end of the thread; re-sending would otherwise duplicate it.
+ * Drop the trailing, unanswered user turn if it is the one we sent.
+ * sendCoachMessage persists the user turn before calling the API, so an
+ * interrupted send leaves an orphan at the end of the thread; re-sending would
+ * otherwise duplicate it. Matched by id where available (legacy records fall
+ * back to text) for the same reason as hasAssistantReplyFor.
+ *
+ * The message goes, the BLOBS STAY: the in-flight record still holds the
+ * attachment ids and the retry rehydrates the images from them. Deleting them
+ * here would turn a recoverable interruption into a silently photo-less retry.
  */
 export function stripOrphanUserTurn(
   thread: ChatMessage[],
-  text: string
+  text: string,
+  messageId?: string
 ): ChatMessage[] {
   const last = thread[thread.length - 1];
-  if (last && last.role === 'user' && last.text === text) {
-    return thread.slice(0, -1);
-  }
-  return thread;
+  if (!last || last.role !== 'user') return thread;
+  // Id first, then text — unlike hasAssistantReplyFor, the text fallback is safe
+  // here because only the trailing, unanswered turn is ever a candidate. It is
+  // suppressed for an empty text (a photo-only turn), which would otherwise
+  // match any trailing photo-only message rather than specifically ours.
+  const idHit = messageId !== undefined && last.id === messageId;
+  const textHit = last.text === text && (text !== '' || messageId === undefined);
+  return idHit || textHit ? thread.slice(0, -1) : thread;
 }
 
 export type RetryResult =
   | { status: 'ok' }
   | { status: 'busy' }
   | { status: 'already-complete' }
-  | { status: 'failed'; error: Error; transient: boolean };
+  | SendFailed;
+
+/** What a retry needs to reproduce the original turn byte-for-byte. */
+export interface RetryOptions {
+  messageId?: string;
+  /** Ids only — the images themselves are rehydrated from IndexedDB. */
+  attachmentIds?: string[];
+}
 
 /**
  * Re-send an interrupted message. Skips the call entirely when the reply already
- * landed, and rebuilds the thread so the retry does not duplicate the user turn.
+ * landed, rebuilds the thread so the retry does not duplicate the user turn, and
+ * re-attaches the same images (rehydrated from the blobs the strip step kept).
+ *
+ * When the caller has no ids to hand (a plain "Retry" tap), the current in-flight
+ * record for this mode supplies them.
  */
 export async function retryCoachSend(
   mode: ChatMode,
   text: string,
-  attempt: number
+  attempt: number,
+  opts: RetryOptions = {}
 ): Promise<RetryResult> {
   if (running) return { status: 'busy' };
 
+  let { messageId, attachmentIds } = opts;
+  if (messageId === undefined || attachmentIds === undefined) {
+    const record = await getInflightSend();
+    if (record && record.mode === mode) {
+      messageId = messageId ?? record.messageId;
+      attachmentIds = attachmentIds ?? record.attachmentIds;
+    }
+  }
+
   const thread = await getChatMessages(mode);
-  if (hasAssistantReplyFor(thread, text)) {
+  if (hasAssistantReplyFor(thread, text, messageId)) {
     // The original request DID reach Claude — do not pay for it twice.
     await clearInflightSend();
     return { status: 'already-complete' };
   }
 
-  const prior = stripOrphanUserTurn(thread, text);
+  const prior = stripOrphanUserTurn(thread, text, messageId);
   if (prior.length !== thread.length) {
+    // Blobs are deliberately left in place — see stripOrphanUserTurn.
     await saveChatMessages(mode, prior);
   }
-  return performCoachSend(mode, text, prior, attempt);
+
+  const attachments =
+    attachmentIds && attachmentIds.length > 0
+      ? await rehydrateAttachments(attachmentIds)
+      : [];
+  return performCoachSend(mode, text, prior, attempt, {
+    attachments,
+    messageId,
+  });
 }
 
 export type ResumeOutcome =
@@ -178,7 +267,7 @@ export async function resumeInflightSend(): Promise<ResumeOutcome> {
   if (!record) return { status: 'none' };
 
   const thread = await getChatMessages(record.mode);
-  if (hasAssistantReplyFor(thread, record.text)) {
+  if (hasAssistantReplyFor(thread, record.text, record.messageId)) {
     await clearInflightSend();
     return {
       status: 'already-complete',
@@ -194,7 +283,8 @@ export async function resumeInflightSend(): Promise<ResumeOutcome> {
   const result = await retryCoachSend(
     record.mode,
     record.text,
-    record.attempts + 1
+    record.attempts + 1,
+    { messageId: record.messageId, attachmentIds: record.attachmentIds }
   );
   return { status: 'retried', mode: record.mode, text: record.text, result };
 }

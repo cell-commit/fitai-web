@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { ChatMessage, ChatMode, ChatToolEvent } from '../types';
+import type { ChatAttachment, ChatMessage, ChatMode, ChatToolEvent } from '../types';
 import { getChatMessages } from '../services/storage';
 import {
   MAX_SEND_ATTEMPTS,
@@ -10,6 +10,14 @@ import {
   resumeInflightSend,
   retryCoachSend,
 } from '../services/coachInflight';
+import {
+  MAX_CHAT_ATTACHMENTS,
+  addChatAttachments,
+  deleteChatAttachments,
+  getAttachmentUrl,
+  pruneOrphanAttachments,
+  revokeAllAttachmentUrls,
+} from '../services/chatAttachments';
 import {
   getCoachContextStatus,
   refreshCoachContext,
@@ -40,6 +48,10 @@ interface SendFailure {
   message: string;
   /** Connectivity/abort (retry is likely to work) vs a real API verdict. */
   transient: boolean;
+  /** Identify the failed turn without its text — a photo-only send has none. */
+  messageId?: string;
+  /** So Retry re-attaches the same images (blobs are kept for exactly this). */
+  attachmentIds?: string[];
 }
 
 type Phase = 'idle' | 'sending' | 'reconnecting';
@@ -53,10 +65,14 @@ export function CoachPane() {
   const [status, setStatus] = useState<CoachContextStatus | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [screenHeldAwake, setScreenHeldAwake] = useState(false);
+  const [pending, setPending] = useState<ChatAttachment[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<ChatAttachment | null>(null);
 
   const sending = phase !== 'idle';
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const modeRef = useRef(mode);
   modeRef.current = mode;
   // Guards the resume path against overlapping runs (mount + visibilitychange,
@@ -72,6 +88,17 @@ export function CoachPane() {
       setStatus(await getCoachContextStatus());
     })();
   }, []);
+
+  // Reclaim blobs whose message was evicted by the 200-message cap. Strictly
+  // fire-and-forget: it must never be awaited on the way to a first paint, and a
+  // failure here is a storage-space problem, not a chat problem.
+  useEffect(() => {
+    void pruneOrphanAttachments().catch(() => {});
+  }, []);
+
+  // Object URLs are cached for the pane's lifetime (thumbnails re-render often);
+  // release them all when it goes away.
+  useEffect(() => revokeAllAttachmentUrls, []);
 
   // Load the thread for the active mode (separate coach / nutrition threads).
   useEffect(() => {
@@ -126,9 +153,15 @@ export function CoachPane() {
         | { status: 'ok' }
         | { status: 'busy' }
         | { status: 'already-complete' }
-        | { status: 'failed'; error: Error; transient: boolean }
+        | {
+            status: 'failed';
+            error: Error;
+            transient: boolean;
+            messageId?: string;
+            attachmentIds?: string[];
+          }
       >,
-      target: { mode: ChatMode; text: string }
+      target: { mode: ChatMode; text: string; attachmentIds?: string[] }
     ) => {
       setFailure(null);
       setPhase(nextPhase);
@@ -142,6 +175,8 @@ export function CoachPane() {
             text: target.text,
             message: outcome.transient ? INTERRUPTED_COPY : outcome.error.message,
             transient: outcome.transient,
+            messageId: outcome.messageId,
+            attachmentIds: outcome.attachmentIds ?? target.attachmentIds,
           });
         }
       } finally {
@@ -156,9 +191,40 @@ export function CoachPane() {
     []
   );
 
+  // ── Attachments ─────────────────────────────────────────────
+
+  async function handleFiles(list: FileList | null) {
+    const picked = Array.from(list ?? []);
+    if (fileInputRef.current) fileInputRef.current.value = ''; // allow re-picking
+    if (picked.length === 0) return;
+
+    const room = MAX_CHAT_ATTACHMENTS - pending.length;
+    if (room <= 0) {
+      setAttachError(`You can attach up to ${MAX_CHAT_ATTACHMENTS} photos.`);
+      return;
+    }
+    setAttachError(
+      picked.length > room ? `Only ${MAX_CHAT_ATTACHMENTS} photos per message.` : null
+    );
+    try {
+      const added = await addChatAttachments(picked.slice(0, room));
+      setPending((prev) => [...prev, ...added]);
+    } catch (e) {
+      setAttachError(e instanceof Error ? e.message : 'Could not attach that photo.');
+    }
+  }
+
+  async function removePending(id: string) {
+    setPending((prev) => prev.filter((a) => a.id !== id));
+    setAttachError(null);
+    // Never sent, so nothing references it — delete the blob straight away.
+    await deleteChatAttachments([id]);
+  }
+
   async function handleSend() {
     const text = input.trim();
-    if (!text || sending) return;
+    const attachments = pending;
+    if ((!text && attachments.length === 0) || sending) return;
 
     // Optimistic user bubble.
     const optimistic: ChatMessage = {
@@ -167,16 +233,23 @@ export function CoachPane() {
       role: 'user',
       text,
       timestamp: Date.now(),
+      ...(attachments.length > 0 ? { attachments } : {}),
     };
     const prior = messages;
     const sendMode = mode;
     setMessages([...prior, optimistic]);
     setInput('');
+    setPending([]);
+    setAttachError(null);
 
     await runWithWakeLock(
       'sending',
-      () => performCoachSend(sendMode, text, prior),
-      { mode: sendMode, text }
+      () => performCoachSend(sendMode, text, prior, 1, { attachments }),
+      {
+        mode: sendMode,
+        text,
+        attachmentIds: attachments.map((a) => a.id),
+      }
     );
   }
 
@@ -185,7 +258,11 @@ export function CoachPane() {
       if (sending) return;
       await runWithWakeLock(
         'reconnecting',
-        () => retryCoachSend(target.mode, target.text, MAX_SEND_ATTEMPTS),
+        () =>
+          retryCoachSend(target.mode, target.text, MAX_SEND_ATTEMPTS, {
+            messageId: target.messageId,
+            attachmentIds: target.attachmentIds,
+          }),
         target
       );
     },
@@ -220,6 +297,8 @@ export function CoachPane() {
             text: record.text,
             message: INTERRUPTED_COPY,
             transient: true,
+            messageId: record.messageId,
+            attachmentIds: record.attachmentIds,
           });
         } else if (outcome.status === 'already-complete') {
           setFailure(null);
@@ -241,6 +320,8 @@ export function CoachPane() {
               ? INTERRUPTED_COPY
               : outcome.result.error.message,
             transient: outcome.result.transient,
+            messageId: outcome.result.messageId ?? record.messageId,
+            attachmentIds: outcome.result.attachmentIds ?? record.attachmentIds,
           });
         }
       } finally {
@@ -279,14 +360,30 @@ export function CoachPane() {
   }
 
   const activeFailure = failure && failure.mode === mode ? failure : null;
-  // Attach the failed state to the user's own bubble where we can find it.
+  // Attach the failed state to the user's own bubble where we can find it. By id
+  // when we have one — a photo-only message has no text to match on.
   let failedIndex = -1;
   if (activeFailure) {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
-      if (m.role === 'user' && m.text === activeFailure.text) {
+      if (m.role !== 'user') continue;
+      const hit = activeFailure.messageId
+        ? m.id === activeFailure.messageId
+        : m.text === activeFailure.text;
+      if (hit) {
         failedIndex = i;
         break;
+      }
+    }
+    // The optimistic bubble carries a local id, so fall back to the text match
+    // before giving up and rendering the standalone notice.
+    if (failedIndex === -1 && activeFailure.text) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role === 'user' && m.text === activeFailure.text) {
+          failedIndex = i;
+          break;
+        }
       }
     }
   }
@@ -360,6 +457,7 @@ export function CoachPane() {
             failure={i === failedIndex ? activeFailure : null}
             onRetry={handleRetry}
             onDismiss={handleDismiss}
+            onOpenAttachment={setViewer}
           />
         ))}
 
@@ -401,29 +499,123 @@ export function CoachPane() {
       </div>
 
       <div className="chat__inputbar">
-        <textarea
-          ref={textareaRef}
-          className="chat__textarea"
-          rows={1}
-          placeholder={
-            mode === 'coach' ? 'Message your coach…' : 'Ask about food…'
-          }
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          disabled={sending}
+        {/* No capture="environment": he needs the photo library, not a forced
+            camera. Otherwise identical to the PhotosSegment picker. */}
+        <input
+          ref={fileInputRef}
+          className="visually-hidden"
+          type="file"
+          accept="image/*"
+          multiple
+          data-testid="chat-file-input"
+          onChange={(e) => void handleFiles(e.target.files)}
         />
-        <button
-          className="chat__send"
-          onClick={() => void handleSend()}
-          disabled={sending || input.trim().length === 0}
-          aria-label="Send message"
-        >
-          <SendIcon />
-        </button>
+
+        {attachError && <div className="chat__attach-error">{attachError}</div>}
+
+        {pending.length > 0 && (
+          <div className="chat__pending" aria-label="Attached photos">
+            {pending.map((a) => (
+              <div className="chat__chip" key={a.id}>
+                <AttachmentImage
+                  attachment={a}
+                  className="chat__chip-img"
+                  alt="Attached photo"
+                />
+                <button
+                  className="chat__chip-x"
+                  onClick={() => void removePending(a.id)}
+                  aria-label="Remove photo"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="chat__inputrow">
+          <button
+            className="chat__attach"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={sending || pending.length >= MAX_CHAT_ATTACHMENTS}
+            aria-label="Attach photo"
+          >
+            📎
+          </button>
+          <textarea
+            ref={textareaRef}
+            className="chat__textarea"
+            rows={1}
+            placeholder={
+              mode === 'coach' ? 'Message your coach…' : 'Ask about food…'
+            }
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onKeyDown}
+            disabled={sending}
+          />
+          <button
+            className="chat__send"
+            onClick={() => void handleSend()}
+            disabled={sending || (input.trim().length === 0 && pending.length === 0)}
+            aria-label="Send message"
+          >
+            <SendIcon />
+          </button>
+        </div>
       </div>
+
+      {viewer && (
+        <div
+          className="chat-att-viewer"
+          role="dialog"
+          aria-label="Photo"
+          onClick={() => setViewer(null)}
+        >
+          <button className="chat-att-viewer__close" aria-label="Close photo">
+            ×
+          </button>
+          <AttachmentImage
+            attachment={viewer}
+            className="chat-att-viewer__img"
+            alt="Attached photo"
+          />
+        </div>
+      )}
     </div>
   );
+}
+
+/**
+ * An attachment rendered from its IndexedDB blob. The object URL is cached in
+ * chatAttachments for the pane's lifetime, so re-renders do not re-create it.
+ */
+function AttachmentImage({
+  attachment,
+  className,
+  alt,
+  onClick,
+}: {
+  attachment: ChatAttachment;
+  className: string;
+  alt: string;
+  onClick?: () => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void getAttachmentUrl(attachment).then((u) => {
+      if (live) setUrl(u);
+    });
+    return () => {
+      live = false;
+    };
+  }, [attachment]);
+
+  if (!url) return <span className={`${className} ${className}--empty`} />;
+  return <img className={className} src={url} alt={alt} onClick={onClick} />;
 }
 
 function Bubble({
@@ -431,18 +623,36 @@ function Bubble({
   failure,
   onRetry,
   onDismiss,
+  onOpenAttachment,
 }: {
   message: ChatMessage;
   failure?: SendFailure | null;
   onRetry?: (failure: SendFailure) => Promise<void>;
   onDismiss?: () => Promise<void>;
+  onOpenAttachment?: (a: ChatAttachment) => void;
 }) {
   const isUser = message.role === 'user';
+  const attachments = message.attachments ?? [];
   return (
     <div className={`bubble-row bubble-row--${isUser ? 'user' : 'coach'}`}>
-      <div className={`bubble bubble--${isUser ? 'user' : 'coach'}`}>
-        {isUser ? message.text : <Markdown text={message.text} />}
-      </div>
+      {attachments.length > 0 && (
+        <div className="bubble-atts">
+          {attachments.map((a) => (
+            <AttachmentImage
+              key={a.id}
+              attachment={a}
+              className="bubble-att"
+              alt="Attached photo"
+              onClick={() => onOpenAttachment?.(a)}
+            />
+          ))}
+        </div>
+      )}
+      {(message.text || attachments.length === 0) && (
+        <div className={`bubble bubble--${isUser ? 'user' : 'coach'}`}>
+          {isUser ? message.text : <Markdown text={message.text} />}
+        </div>
+      )}
       {!isUser && message.toolEvents && message.toolEvents.length > 0 && (
         <div className="tool-chips">
           {message.toolEvents.map((ev, i) => (
