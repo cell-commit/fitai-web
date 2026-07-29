@@ -149,6 +149,11 @@ export function TodayPane({ onGoToWeek }: TodayPaneProps) {
     <SessionRunner
       programDay={day}
       today={today}
+      // Opening the Today tab is not the same as starting to train: the runner
+      // shows the plan behind a "Start session" button, and only that tap
+      // starts the clock. (DayDetail deliberately does NOT pass this — its own
+      // "Start workout" button already is the gate.)
+      requireStart
       header={
         <div className="today-head">
           <div>

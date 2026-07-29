@@ -617,6 +617,207 @@ describe('SessionRunner — Apple Watch nudge', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────
+// The start gate (requireStart) — WAS: mounting the runner (i.e. merely
+// opening the Today tab) started the clock, took the wake lock and fired the
+// watch nudge, so every logged startedAt was really "when he tapped Today".
+// ─────────────────────────────────────────────────────────────
+
+describe('SessionRunner — start gate', () => {
+  const NUDGE = /Start the workout on your Watch too/;
+
+  /** Install a fake Screen Wake Lock API and return its request spy. */
+  function stubWakeLock() {
+    const request = vi.fn(async () => ({
+      release: async () => {},
+      addEventListener: () => {},
+    }));
+    Object.defineProperty(navigator, 'wakeLock', {
+      value: { request },
+      configurable: true,
+      writable: true,
+    });
+    return request;
+  }
+
+  afterEach(() => {
+    delete (navigator as unknown as { wakeLock?: unknown }).wakeLock;
+  });
+
+  /** A draft for today's day with one ✓-ed set — i.e. genuinely mid-session. */
+  async function seedWorkingDraft(startedAt: number) {
+    await saveSessionDraft({
+      date: DAY.date,
+      focus: 'push',
+      startedAt,
+      feedback: '',
+      exercises: [
+        {
+          name: 'Bench Press',
+          slug: 'bench-press',
+          targetSets: 3,
+          targetRepRange: '8-10',
+          sets: [
+            { reps: 10, weightKg: 60, done: true },
+            { reps: 0, weightKg: 60 },
+            { reps: 0, weightKg: 60 },
+          ],
+        },
+      ],
+    });
+  }
+
+  it('opens on a read-only preview: the plan, a Start button, nothing else', async () => {
+    await seedPreviousBench();
+    renderRunner({ requireStart: true });
+
+    expect(await screen.findByText('Start session')).toBeInTheDocument();
+    // The day is all there…
+    expect(screen.getByText('Bench Press')).toBeInTheDocument();
+    expect(screen.getByText('Shoulder Press')).toBeInTheDocument();
+    expect(screen.getByText('3 × 8-10')).toBeInTheDocument();
+    expect(screen.getByText('Last: 10/9/8 @ 60/60/57.5kg')).toBeInTheDocument();
+    // …but nothing that can log work, and no running clock.
+    expect(screen.queryByText('Finish session')).toBeNull();
+    expect(document.querySelectorAll('.set-row')).toHaveLength(0);
+    expect(document.querySelectorAll('.set-row__tick')).toHaveLength(0);
+    expect(screen.queryByLabelText('Session time')).toBeNull();
+    expect(screen.queryByText('+ Add set')).toBeNull();
+  });
+
+  it('does not touch the wake lock or the watch nudge until Start is tapped', async () => {
+    const request = stubWakeLock();
+    renderRunner({ requireStart: true });
+    await screen.findByText('Start session');
+
+    expect(request).not.toHaveBeenCalled();
+    expect(screen.queryByText(NUDGE)).toBeNull();
+    expect(screen.queryByText('Screen staying on')).toBeNull();
+
+    await userEvent.click(screen.getByText('Start session'));
+
+    expect(await screen.findByText('Finish session')).toBeInTheDocument();
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(NUDGE)).toBeInTheDocument();
+  });
+
+  it('stamps startedAt when Start is tapped, not when the tab was opened', async () => {
+    const clock = useFrozenClock();
+    const mountedAt = Date.now();
+    renderRunner({ requireStart: true });
+    await screen.findByText('Start session');
+
+    // He reads the plan for a minute before starting.
+    await clock.advance(60_000);
+    const tappedAt = Date.now();
+    expect(tappedAt).toBe(mountedAt + 60_000);
+
+    await userEvent.click(screen.getByText('Start session'));
+    await screen.findByText('Finish session');
+
+    // The clock starts HERE — 0:00, not 1:00.
+    expect(screen.getByLabelText('Session time')).toHaveTextContent('0:00');
+    await waitFor(async () => {
+      const draft = await getSessionDraft(DAY.date);
+      expect(draft?.startedAt).toBe(tappedAt);
+    });
+    expect((await getSessionDraft(DAY.date))?.startedAt).not.toBe(mountedAt);
+  });
+
+  it('logs the tapped-Start time as the session start', async () => {
+    const clock = useFrozenClock();
+    const mountedAt = Date.now();
+    renderRunner({ requireStart: true });
+    await screen.findByText('Start session');
+    await clock.advance(60_000);
+    const tappedAt = Date.now();
+
+    await userEvent.click(screen.getByText('Start session'));
+    await screen.findByText('Finish session');
+    await userEvent.click(tickButtons(0)[0]);
+    await userEvent.click(screen.getByText('Finish session'));
+    await userEvent.click(screen.getByText('Log session'));
+    await screen.findByText('Session done');
+
+    const logs = await listSessionLogs();
+    expect(logs[0].startedAt).toBe(tappedAt);
+    expect(logs[0].startedAt).not.toBe(mountedAt);
+  });
+
+  it('writes no draft at all while sitting in the preview', async () => {
+    renderRunner({ requireStart: true });
+    await screen.findByText('Start session');
+    await flush();
+
+    expect(await getSessionDraft(DAY.date)).toBeNull();
+  });
+
+  it('skips the preview and resumes when a draft already has a logged set', async () => {
+    const clock = useFrozenClock();
+    const request = stubWakeLock();
+    await seedWorkingDraft(Date.now() - 600_000);
+
+    renderRunner({ requireStart: true });
+    await screen.findByText('Bench Press');
+
+    // Straight into the live session, clock continuing from the draft.
+    expect(screen.queryByText('Start session')).toBeNull();
+    expect(screen.getByText('Finish session')).toBeInTheDocument();
+    await waitFor(() => expect(repsInputs(0)[0]).toHaveValue(10));
+    expect(screen.getByLabelText('Session time')).toHaveTextContent('10:00');
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    // Mid-session reload: the nudge stays down.
+    expect(screen.queryByText(NUDGE)).toBeNull();
+    await clock.advance(0);
+  });
+
+  it('re-gates (and re-stamps) a draft that was never actually worked', async () => {
+    const clock = useFrozenClock();
+    const staleStart = Date.now() - 3_600_000;
+    await saveSessionDraft({
+      date: DAY.date,
+      focus: 'push',
+      startedAt: staleStart,
+      feedback: '',
+      exercises: [
+        {
+          name: 'Bench Press',
+          slug: 'bench-press',
+          targetSets: 3,
+          targetRepRange: '8-10',
+          sets: [{ reps: 0, weightKg: 0 }],
+        },
+      ],
+    });
+
+    renderRunner({ requireStart: true });
+    expect(await screen.findByText('Start session')).toBeInTheDocument();
+
+    await clock.advance(5_000);
+    const tappedAt = Date.now();
+    await userEvent.click(screen.getByText('Start session'));
+    await screen.findByText('Finish session');
+
+    expect(screen.getByLabelText('Session time')).toHaveTextContent('0:00');
+    await waitFor(async () =>
+      expect((await getSessionDraft(DAY.date))?.startedAt).toBe(tappedAt)
+    );
+  });
+
+  it('without requireStart (the Week → day path) it goes straight into the session', async () => {
+    const request = stubWakeLock();
+    renderRunner();
+    await screen.findByText('Bench Press');
+
+    expect(screen.queryByText('Start session')).toBeNull();
+    expect(screen.getByText('Finish session')).toBeInTheDocument();
+    expect(weightInputs(0)).toHaveLength(3);
+    expect(screen.getByLabelText('Session time')).toHaveTextContent('0:00');
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(NUDGE)).toBeInTheDocument();
+  });
+});
+
 describe('SessionRunner — draft-write regression', () => {
   it('60s of rest ticking writes the draft zero extra times', async () => {
     vi.useFakeTimers();

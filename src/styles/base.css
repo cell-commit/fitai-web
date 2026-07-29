@@ -783,6 +783,12 @@ a {
   margin-top: var(--sp-sm);
 }
 
+/* Pre-session preview: the head IS the whole card, so its gap to the (absent)
+ * set rows would otherwise render as dead space along the bottom. */
+.ex-card--preview .ex-card__head {
+  margin-bottom: 0;
+}
+
 /* Set rows */
 .set-rows {
   display: flex;

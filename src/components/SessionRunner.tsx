@@ -27,6 +27,7 @@ import {
   previousLine,
   doneSetCount,
   isSetDone,
+  hasLoggedSet,
   placeholderForSet,
   fillWeightForward,
   type SessionDraft,
@@ -48,13 +49,27 @@ interface SessionRunnerProps {
   today?: string;
   /** Render the readiness check-in card (defaults to true). */
   showReadiness?: boolean;
+  /**
+   * Gate the session behind a read-only preview with a "Start session" button.
+   *
+   * Set by callers that mount the runner just because the user LOOKED at a
+   * screen (the Today pane): without it, merely opening Today started the
+   * clock, took the wake lock and fired the watch nudge, so every logged
+   * `startedAt` was really "when he tapped the tab". Callers that already have
+   * their own explicit start affordance (DayDetail's "Start workout") must NOT
+   * set it — that would be a second tap for the same decision.
+   *
+   * Ignored when a draft with logged sets exists: he is mid-session and gets
+   * resumed straight into it, never re-gated.
+   */
+  requireStart?: boolean;
   /** Optional header rendered at the top of the session pane (chip / title / date). */
   header?: ReactNode;
   /** Fired once the session is completed and persisted. */
   onComplete?: (result: CompleteSessionResult) => void;
 }
 
-type Phase = 'loading' | 'session' | 'done';
+type Phase = 'loading' | 'preview' | 'session' | 'done';
 
 /** Fallback rest length when Settings has none (matches DEFAULT_SETTINGS). */
 const FALLBACK_REST_SEC = 90;
@@ -109,11 +124,16 @@ function programExerciseToLogged(pe: ProgramExercise): LoggedExercise {
  * by the program day's date) so an in-progress session — including a running
  * rest — survives a reload. Used by the Today pane and launchable from any day
  * in the Week view.
+ *
+ * With `requireStart` it opens on a read-only 'preview' of the day behind a
+ * "Start session" button: nothing that says "training has begun" — the clock,
+ * the wake lock, the watch nudge, the draft — happens until that tap.
  */
 export function SessionRunner({
   programDay,
   today = getTodayDate(),
   showReadiness = true,
+  requireStart = false,
   header,
   onComplete,
 }: SessionRunnerProps) {
@@ -202,21 +222,47 @@ export function SessionRunner({
       setWatchNudgeDismissed(false);
     }
 
+    // Mid-session? Anything actually logged means he is training right now, so
+    // he is resumed into the live session and never re-gated by the preview.
+    const alreadyWorking = resuming && hasLoggedSet(draft!);
+
     // Watch nudge: fresh sessions only. A mid-session reload (anything already
     // logged, or a banner he already dismissed) must not put it back on screen.
-    const alreadyWorking =
-      resuming && draft!.exercises.some((ex) => ex.sets.some(isSetDone));
+    // In 'preview' it is suppressed outright — it says "start your workout",
+    // which is a lie until he has. beginSession() raises it on the same rule.
+    const gate = requireStart && !alreadyWorking;
     setShowWatchNudge(
-      stored.watchReminderEnabled !== false &&
+      !gate &&
+        stored.watchReminderEnabled !== false &&
         !alreadyWorking &&
         draft?.watchNudgeDismissed !== true
     );
 
-    setPhase('session');
+    setPhase(gate ? 'preview' : 'session');
     hydrated.current = true;
   }
 
+  /**
+   * "Start session" — THE moment training begins, and the only place a gated
+   * session gets its start stamp. Everything that used to fire on mount hangs
+   * off this tap: the clock is (re)stamped from here so a duration can never
+   * include the time he spent reading the plan, the phase flip takes the wake
+   * lock (see the effect below), the watch nudge appears, and — being a real
+   * user gesture — it is the ideal place to unlock iOS audio for the rest bell.
+   */
+  function beginSession() {
+    void primeAudio();
+    setStartedAt(Date.now());
+    setShowWatchNudge(
+      settings?.watchReminderEnabled !== false && !watchNudgeDismissed
+    );
+    setPhase('session');
+  }
+
   // Keep the screen awake for the whole session (item: "keep screen on").
+  // Deliberately keyed on phase === 'session': 'preview' is him reading the
+  // plan, and holding a wake lock (or claiming "Screen staying on") before he
+  // has started is exactly the auto-start behaviour this gate exists to kill.
   // The `cancelled` flag matters: acquireWakeLock is async, so an unmount while
   // it is in flight would otherwise leave a sentinel held with no owner.
   useEffect(() => {
@@ -488,6 +534,46 @@ export function SessionRunner({
       <div className="pane">
         <SessionSummary log={doneLog} result={result} />
       </div>
+    );
+  }
+
+  // phase === 'preview' — the plan, read-only, with one thing to tap. No clock,
+  // no set rows, no ✓, no finish footer: nothing here can log anything.
+  if (phase === 'preview') {
+    return (
+      <>
+        <div className="pane pane--session">
+          {header}
+
+          {showReadiness && (
+            <ReadinessCard checkIn={checkIn} onChange={updateReadiness} />
+          )}
+
+          {programDay.coachNotes && (
+            <div className="coachnote">
+              <ClampText text={programDay.coachNotes}>
+                <Markdown text={programDay.coachNotes} />
+              </ClampText>
+            </div>
+          )}
+
+          <div className="exercise-cards">
+            {exercises.map((ex, exIdx) => (
+              <ExercisePreviewCard
+                key={`${ex.name}-${exIdx}`}
+                ex={ex}
+                previous={previous[exIdx] ?? null}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="finish-footer">
+          <button className="btn" onClick={beginSession}>
+            Start session
+          </button>
+        </div>
+      </>
     );
   }
 
@@ -783,6 +869,40 @@ function Slider({
         onChange={(e) => onChange(Number(e.target.value))}
         aria-label={label}
       />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Exercise card — read-only (pre-session preview)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The head of an ExerciseCard and nothing else: image, name, target sets ×
+ * reps, and last session's numbers. Same markup (so the preview and the live
+ * session look like one screen) minus every control that could log work —
+ * there are no set rows, no steppers and no ✓ until he taps Start.
+ */
+function ExercisePreviewCard({
+  ex,
+  previous,
+}: {
+  ex: LoggedExercise;
+  previous: LoggedExercise | null;
+}) {
+  const last = previousLine(previous);
+  return (
+    <div className="card ex-card ex-card--preview">
+      <div className="ex-card__head">
+        <ExerciseImage slug={ex.slug} alt={ex.name} />
+        <div className="exrow__body">
+          <div className="exrow__name">{ex.name}</div>
+          <div className="exrow__meta">
+            {ex.targetSets} × {ex.targetRepRange}
+          </div>
+          {last && <div className="ex-card__last">{last}</div>}
+        </div>
+      </div>
     </div>
   );
 }

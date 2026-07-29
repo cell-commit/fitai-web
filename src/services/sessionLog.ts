@@ -273,9 +273,17 @@ async function writeDraftMap(map: DraftMap): Promise<void> {
   await kv.setItem(DRAFT_KEY, JSON.stringify(map));
 }
 
-function hasLoggedSet(draft: SessionDraft): boolean {
-  // Goes through isSetDone so a ✓-ed set counts as in-progress work even when
-  // its reps field is still 0 (keeps otherDraftsInProgress honest).
+/**
+ * True when a draft represents real work in progress — at least one set is
+ * actually logged. A draft with rows but nothing done (he opened the session and
+ * never lifted) does NOT count.
+ *
+ * Goes through isSetDone so a ✓-ed set counts as in-progress work even when its
+ * reps field is still 0 (keeps otherDraftsInProgress honest). Also the rule
+ * SessionRunner uses to decide whether to resume straight into a live session or
+ * re-gate behind the "Start session" preview.
+ */
+export function hasLoggedSet(draft: SessionDraft): boolean {
   return draft.exercises.some((ex) => ex.sets.some(isSetDone));
 }
 
