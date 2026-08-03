@@ -10,6 +10,7 @@ import {
   weekDates,
   type ProgramState,
 } from '../services/program';
+import { resolveWeekStart } from '../services/programGuard';
 import { getTodayDate } from '../utils/date';
 import { DayDetail } from './DayDetail';
 import { ProposedWeekPage } from './ProposedWeekPage';
@@ -171,7 +172,7 @@ export function WeekPane() {
         <div className="week-head">
           <div>
             <div className="week-head__range">
-              {weekRangeLabel(program.weekStart)}
+              {weekRangeLabel(resolveWeekStart(program))}
             </div>
             <div className="week-head__sub">
               Revision {program.revision}
@@ -242,7 +243,11 @@ export function WeekPane() {
 
       {!loading && program && (
         <div className="week-grid">
-          {weekDates(program.weekStart).map((date, i) => {
+          {/* Grid built from the week the DAYS belong to, not the stored
+              weekStart field: a program written before that field was derived
+              from its days can carry another week's Monday, and every day
+              lookup would then miss (seven empty cards for a full week). */}
+          {weekDates(resolveWeekStart(program)).map((date, i) => {
             const day = program.days.find((d) => d.date === date);
             return (
               <DayCard

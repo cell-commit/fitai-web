@@ -85,6 +85,26 @@ describe('PROGRAMMING_RULES prompt block', () => {
     expect(PROGRAMMING_RULES).toMatch(/8\+ sets/);
   });
 
+  it('rotates PATTERNS, not just names — three rows are still three horizontal pulls', () => {
+    expect(PROGRAMMING_RULES).toMatch(/movement PATTERNS/);
+    expect(PROGRAMMING_RULES).toMatch(/one arm dumbbell row|one-arm dumbbell row/i);
+    expect(PROGRAMMING_RULES).toMatch(/inverted row/i);
+    expect(PROGRAMMING_RULES).toMatch(/ONE pattern/);
+    expect(PROGRAMMING_RULES).toMatch(/horizontal pull/i);
+    // Changing the implement or the grip is not variety on its own.
+    expect(PROGRAMMING_RULES).toMatch(
+      /NOT variety if the pattern is unchanged/i
+    );
+  });
+
+  it('requires both pulling directions, and the same balance for press and legs', () => {
+    expect(PROGRAMMING_RULES).toMatch(/BOTH horizontal and vertical pulling/i);
+    expect(PROGRAMMING_RULES).toMatch(/lat pulldown/i);
+    expect(PROGRAMMING_RULES).toMatch(/contraindicates/i);
+    expect(PROGRAMMING_RULES).toMatch(/hinge and squat|hinge vs squat/i);
+    expect(PROGRAMMING_RULES).toMatch(/never put the same pattern on three lifting days/i);
+  });
+
   it('exempts prescribed correctives and keeps names matchable', () => {
     expect(PROGRAMMING_RULES).toMatch(/corrective/i);
     expect(PROGRAMMING_RULES).toMatch(/EXEMPT/);
@@ -111,6 +131,16 @@ describe('update_weekly_program tool copy limits', () => {
     expect(d).toMatch(/2 distinct movements/i);
     expect(d).toMatch(/corrective/i);
     expect(d).toMatch(/exempt/i);
+  });
+
+  it('mirrors the movement-pattern rules too', () => {
+    const d = COACH_TOOLS.find((t) => t.name === 'update_weekly_program')!
+      .description;
+    expect(d).toMatch(/movement PATTERNS/);
+    expect(d).toMatch(/ONE pattern \(horizontal pull\)/);
+    expect(d).toMatch(/BOTH horizontal pulling .* and vertical pulling/i);
+    expect(d).toMatch(/NOT variety if the pattern is unchanged/i);
+    expect(d).toMatch(/hinge vs squat/i);
   });
 
   it('carries the shared PROGRAM_SCHEMA so the field limits apply', () => {

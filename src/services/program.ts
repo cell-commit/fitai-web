@@ -28,6 +28,14 @@ import { getCached, isConfigured, refreshAll } from './driveSync';
 import { getTodayDate, getWeekStart, formatDate } from '../utils/date';
 import { matchExercises, prefetchWeekImages } from './exerciseDb';
 import { reviewAndStage } from './programReview';
+import {
+  ProgramSafetyError,
+  assertRetained,
+  assertWeekHasExercises,
+  countExercises,
+  resolveWeekStart,
+  weekStartForDays,
+} from './programGuard';
 
 // ─────────────────────────────────────────────────────────────
 // Model-output shape + strict JSON schema
@@ -193,12 +201,19 @@ export const PLAN_STYLE_RULES = `PLAN COPY STYLE (strict — this text is read o
  * Motivated by a real complaint: a generated week put "Chest-Supported Row" on
  * all three lifting days. Jason's ask is variety for range of motion and for
  * hitting a target area from different angles.
+ *
+ * Then by its sequel: told not to repeat exercises, the coach programmed a
+ * chest-supported row, a one-arm row and an inverted row — three different names,
+ * one movement pattern, no vertical pulling all week. Hence the pattern rules:
+ * rotating row types was never the point, rotating PATTERNS is.
  */
-export const PROGRAMMING_RULES = `PROGRAMMING RULES — VARIETY (Jason has asked for this explicitly: he wants range of motion and the target area hit from different angles):
+export const PROGRAMMING_RULES = `PROGRAMMING RULES — VARIETY AND MOVEMENT PATTERNS (Jason has asked for this explicitly: he wants range of motion and the target area hit from different angles):
 - Do NOT repeat the same exercise on more than one day in the week unless there is a specific reason — rehab/corrective work, or a movement his training status pins in place. Repeating a movement three days running is not acceptable programming.
-- Rotate variations instead of repeating: different row types (chest-supported row, one-arm dumbbell row, seated cable row, inverted row), different press angles (flat, incline, overhead), different grips (pronated, neutral, supinated), machine vs free-weight, bilateral vs unilateral. Vary the movement itself, not just the label.
-- Cover each muscle group with at least 2 DISTINCT movements whenever its weekly volume is meaningful (roughly 8+ sets). One exercise carrying a whole group's volume is a programming error.
-- Correctives explicitly prescribed in the training status (e.g. physio-assigned work, face pulls every session) are EXEMPT — keep them exactly as prescribed, on every day the status says, and do not swap them for variety's sake.
+- Rotate movement PATTERNS, not just exercise names. Chest-supported row, one-arm dumbbell row and inverted row are three different names for ONE pattern — a horizontal pull — and a week built from those three is exactly the monotony he complained about, not variety. Swapping the implement, the machine or the grip is NOT variety if the pattern is unchanged.
+- The patterns to rotate between: horizontal pull (rows) vs vertical pull (lat pulldown, pull-up, chin-up); horizontal press (bench press, push-up, fly) vs vertical press (overhead press, dip); hip hinge (Romanian deadlift, good morning, back extension) vs squat (goblet squat, leg press, hack squat) vs split stance (walking lunge, Bulgarian split squat, step-up); plus knee flexion (leg curl), knee extension, hip thrust, calf, curls, triceps and core.
+- Any week with meaningful back volume (roughly 8+ sets) must include BOTH horizontal and vertical pulling, unless his training status contraindicates one. Same principle for pressing (horizontal and overhead) and for lower body (hinge and squat). Never run a whole area's weekly volume through a single pattern, and never put the same pattern on three lifting days — two rows and a pulldown beats three rows, every time.
+- Cover each muscle group with at least 2 DISTINCT movements whenever its weekly volume is meaningful (roughly 8+ sets), and make sure those movements are not all the same pattern. One exercise carrying a whole group's volume is a programming error. Vary the angle (flat, incline, overhead), the grip (pronated, neutral, supinated), machine vs free-weight and bilateral vs unilateral ON TOP of the pattern rotation — never instead of it.
+- Correctives explicitly prescribed in the training status (e.g. physio-assigned work, face pulls every session) are EXEMPT — keep them exactly as prescribed, on every day the status says, and do not swap them for variety's sake. A pattern the status deliberately restricts is exempt the other way round: if it says no overhead pressing or no vertical pulling right now, respect that and do not add the missing pattern back for balance.
 - Keep exercise names conventional gym names so the app can match exercise images. Variety must come from genuinely different movements, never from invented or embellished names.`;
 
 const DEFAULT_CONTEXT = `No training files are connected yet. Assume a healthy intermediate lifter on a 3-day split — Monday Push, Wednesday Pull, Friday Full Body — with Thursday and Sunday easy cardio, and Tuesday/Saturday rest. Use conventional, safe programming until real training files are connected.`;
@@ -354,6 +369,15 @@ export function dayContentChanged(
  * days whose exercises are unchanged keep their prior status, and days whose
  * exercises changed are marked 'amended'. Bumps the revision and fills slugs.
  * PURE of persistence — the caller decides whether to save or stage.
+ *
+ * ⚠️ weekStart is DERIVED FROM THE DAYS, never inherited from `current`. The
+ * data-loss bug this replaced did `current?.weekStart ?? model.weekStart`: when
+ * the stored week was last week's (rollover not yet done) and the coach quite
+ * correctly programmed THIS week, the result carried last week's Monday with
+ * this week's day dates. Both renderers walk weekDates(weekStart) and look each
+ * date up in days, so every lookup missed and all seven days rendered as empty
+ * "Rest" rows — and approving it would have overwritten a populated week with
+ * one the UI could not show at all. See services/programGuard.ts.
  */
 async function reconcile(
   model: ModelProgram,
@@ -373,11 +397,20 @@ async function reconcile(
     return { ...incoming, status: 'amended' };
   });
 
+  const weekStart = weekStartForDays(days);
+  if (!weekStart) {
+    throw new ProgramSafetyError(
+      'The proposed week’s days do not all fall in the same Monday-to-Sunday week, so it cannot be shown or applied. Nothing has been changed — ask the coach to rebuild the week with correct dates.'
+    );
+  }
+
   const program: WeeklyProgram = {
-    weekStart: current?.weekStart ?? model.weekStart,
+    weekStart,
     days,
+    // A proposal for a DIFFERENT week than the stored one starts its own
+    // revision count; only an amendment of the same week keeps counting up.
+    revision: (current?.weekStart === weekStart ? (current?.revision ?? 0) : 0) + 1,
     generatedAt: Date.now(),
-    revision: (current?.revision ?? 0) + 1,
     rationale: model.rationale ?? current?.rationale,
   };
 
@@ -399,8 +432,14 @@ export async function stageProgramReplacement(
   reason: string
 ): Promise<PendingProgram> {
   const model = validateModelProgram(raw);
+  // Safety net (see programGuard.ts): count what the model actually sent, refuse
+  // an entirely empty week outright, and re-count after reconcile so a transform
+  // can never quietly gut the proposal on its way to storage.
+  assertWeekHasExercises(model.days, 'the week the coach proposed');
+  const incoming = countExercises(model.days);
   const current = await getWeeklyProgram();
   const { program } = await reconcile(model, current);
+  assertRetained(incoming, countExercises(program.days), 'reconciling it with your current week');
   const recentLogs = await getSessionLogs(NORM_LOG_WINDOW_DAYS);
   return reviewAndStage(program, {
     source: 'coach',
@@ -449,7 +488,14 @@ ${PLAN_STYLE_RULES}`;
     PROGRAM_SCHEMA
   );
   const model = validateModelProgram(raw);
+  // The reviewer's revision is a rewrite of the whole week by a second model
+  // call; if it comes back gutted, throwing here makes reviewAndStage fall back
+  // to the ORIGINAL proposal (its catch keeps the first verdict) rather than
+  // staging an emptied week.
+  assertWeekHasExercises(model.days, 'the reviewer’s revised week');
+  const before = countExercises(proposed.days);
   const { program } = await reconcile(model, proposed);
+  assertRetained(before, countExercises(program.days), 'applying the reviewer’s revision');
   // Keep the proposal's revision number — this is a revision of the same
   // proposal, not a further amendment of the active week.
   return { ...program, revision: proposed.revision };
@@ -486,7 +532,22 @@ export async function approvePendingProgram(): Promise<WeeklyProgram | null> {
   const pending = await getPendingProgram();
   if (!pending) return null;
   const current = await getWeeklyProgram();
-  const program = preserveDoneDays(pending.program, current);
+  // Heal a proposal staged before weekStart was derived from the days (its
+  // weekStart could belong to a different week than its days, which made every
+  // renderer show seven empty days). Purely a relabel — no day is touched.
+  const staged: WeeklyProgram = {
+    ...pending.program,
+    weekStart: resolveWeekStart(pending.program),
+  };
+  const program = preserveDoneDays(staged, current);
+
+  // Last line of defence: never replace a populated week with an empty one.
+  if (current && countExercises(current.days) > 0 && countExercises(program.days) === 0) {
+    throw new ProgramSafetyError(
+      'That proposal has no exercises on any day, so approving it would wipe your current week. Nothing has been changed — discard it and ask the coach for a new week.'
+    );
+  }
+
   await saveWeeklyProgram(program); // archives the outgoing week on week change
   await clearPendingProgram();
   prefetchWeekImages(program);
@@ -534,10 +595,14 @@ ${PLAN_STYLE_RULES}`;
     PROGRAM_SCHEMA
   );
   const model = validateModelProgram(raw);
+  assertWeekHasExercises(model.days, 'the generated week');
 
   const days = await fillSlugs(model.days);
+  assertRetained(countExercises(model.days), countExercises(days), 'matching exercise images');
   const program: WeeklyProgram = {
-    weekStart: ctx.weekStart,
+    // Derive from the days so a model that dated the week differently is shown
+    // (and stored) coherently; ctx.weekStart is the fallback, as instructed.
+    weekStart: weekStartForDays(days) ?? ctx.weekStart,
     days,
     generatedAt: Date.now(),
     revision: 1,
@@ -603,7 +668,10 @@ ${PLAN_STYLE_RULES}`;
     PROGRAM_SCHEMA
   );
   const model = validateModelProgram(raw);
+  assertWeekHasExercises(model.days, 'the amended week');
+  const incoming = countExercises(model.days);
   const { program } = await reconcile(model, current);
+  assertRetained(incoming, countExercises(program.days), 'reconciling it with your current week');
   const recentLogs = await getSessionLogs(NORM_LOG_WINDOW_DAYS);
   return reviewAndStage(program, {
     source: 'amend',
@@ -611,6 +679,46 @@ ${PLAN_STYLE_RULES}`;
     previous: current,
     recentLogs,
   });
+}
+
+// ─────────────────────────────────────────────────────────────
+// Human-readable week summary
+// ─────────────────────────────────────────────────────────────
+
+/** "Mon 13 Jul" for an ISO date. */
+function shortDayLabel(date: string): string {
+  return new Date(`${date}T12:00:00`).toLocaleDateString('en-GB', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+/**
+ * Compact plain-text rendering of a week, one line per day:
+ *   "Mon 13 Jul — Upper Reintro: Leg Press 3×10-12, Seated Cable Row 3×12"
+ *   "Tue 14 Jul — Rest"
+ *
+ * Written for the update_weekly_program TOOL RESULT: Jason complained he was
+ * only ever told the plan "has been updated" and had to leave the conversation
+ * to see it. Handing the coach the actual content back means its reply can state
+ * what it programmed. Terse on purpose — this rides in a phone chat bubble.
+ */
+export function summarizeWeek(program: WeeklyProgram): string {
+  const byDate = new Map(program.days.map((d) => [d.date, d]));
+  return weekDates(resolveWeekStart(program))
+    .map((date) => {
+      const day = byDate.get(date);
+      const label = shortDayLabel(date);
+      if (!day || day.exercises.length === 0) {
+        return `${label} — ${day?.title ?? 'Rest'}`;
+      }
+      const items = day.exercises
+        .map((e) => `${e.name} ${e.sets}×${e.repRange}`)
+        .join(', ');
+      return `${label} — ${day.title}: ${items}`;
+    })
+    .join('\n');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -632,7 +740,10 @@ export function programStateFor(
 ): ProgramState {
   if (!program) return 'none';
   const thisWeek = getWeekStart(today);
-  return program.weekStart < thisWeek ? 'stale' : 'current';
+  // Judge by the week the DAYS cover: a program stored with a mislabelled
+  // weekStart (possible for records written before it was derived from the
+  // days) must not be called stale while its sessions are this week's.
+  return resolveWeekStart(program) < thisWeek ? 'stale' : 'current';
 }
 
 export async function getProgramState(): Promise<ProgramState> {

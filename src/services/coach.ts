@@ -39,7 +39,9 @@ import { attachmentsToBlocks } from './chatAttachments';
 import {
   PROGRAM_SCHEMA,
   stageProgramReplacement,
+  summarizeWeek,
 } from './program';
+import { ProgramSafetyError } from './programGuard';
 import {
   buildCoachSystem,
   buildContextBlock,
@@ -106,7 +108,7 @@ export const COACH_TOOLS: ClaudeTool[] = [
   {
     name: 'update_weekly_program',
     description:
-      "Replace Jason's weekly program with a full 7-day week (Monday→Sunday, correct ISO dates, matching the current weekStart). WHEN TO CALL — only when Jason has ASKED for a plan or a change to one, or has clearly accepted a proposal you put to him. Do NOT stage a change he did not ask for: a question about what you can see, what you know, or what you would do is answered in words, never with a staged week. Do NOT call this to pre-empt a decision that contradicts what he said he expects (holding back a reintroduction, extending a restriction, cutting work he asked for) while that question is still open — put the recommendation to him in the reply and offer to build the week instead. Days already marked 'done' are preserved automatically — copy them back unchanged. Use conventional gym exercise names so the app can match images. VARIETY (Jason asked for this explicitly — range of motion and hitting the target area from different angles): do NOT repeat the same exercise on more than one day of the week unless there is a specific reason (rehab/corrective work, or a movement his training status pins). Rotate variations instead — different row types (chest-supported, one-arm dumbbell, seated cable, inverted), different press angles and grips, machine vs free-weight — and cover each muscle group with at least 2 distinct movements when its weekly volume is meaningful (roughly 8+ sets). Correctives explicitly prescribed in his training status are exempt: keep them as prescribed. Variety must come from genuinely different movements, never invented names. Keep plan copy terse — it is read on a phone mid-workout: day title ≤ 4 words with no parentheticals, coachNotes ≤ 30 words as an imperative cue, exercise notes ≤ 12 words. Your reasoning and caveats belong in your chat reply, never in the plan.",
+      "Replace Jason's weekly program with a full 7-day week (Monday→Sunday, correct ISO dates). DATES: all seven days must fall inside ONE Monday-to-Sunday week — program the week you are actually writing, using today's date from the context block (if the stored program is last week's, use THIS week's dates, not its weekStart). AFTER IT IS STAGED: the tool result gives you the week exactly as staged — state what you programmed in your reply (training days with exercises and sets×reps, rest days in one line), never just that it has been staged. WHEN TO CALL — only when Jason has ASKED for a plan or a change to one, or has clearly accepted a proposal you put to him. Do NOT stage a change he did not ask for: a question about what you can see, what you know, or what you would do is answered in words, never with a staged week. Do NOT call this to pre-empt a decision that contradicts what he said he expects (holding back a reintroduction, extending a restriction, cutting work he asked for) while that question is still open — put the recommendation to him in the reply and offer to build the week instead. Days already marked 'done' are preserved automatically — copy them back unchanged. Use conventional gym exercise names so the app can match images. VARIETY (Jason asked for this explicitly — range of motion and hitting the target area from different angles): do NOT repeat the same exercise on more than one day of the week unless there is a specific reason (rehab/corrective work, or a movement his training status pins). Rotate movement PATTERNS, not just names: chest-supported row, one-arm dumbbell row and inverted row are three names for ONE pattern (horizontal pull), and a week of all three is the monotony he complained about. Changing the implement, the machine or the grip is NOT variety if the pattern is unchanged. Any week with meaningful back volume needs BOTH horizontal pulling (rows) and vertical pulling (lat pulldown, pull-up) unless his training status contraindicates one — same principle for horizontal vs overhead pressing, and for hinge vs squat on lower body. Vary angles, grips and machine vs free-weight on top of that, and cover each muscle group with at least 2 distinct movements when its weekly volume is meaningful (roughly 8+ sets), never all in the same pattern. Correctives explicitly prescribed in his training status are exempt: keep them as prescribed, and if the status restricts a pattern (no overhead work, no vertical pulling) respect that rather than adding it back for balance. Variety must come from genuinely different movements, never invented names. Keep plan copy terse — it is read on a phone mid-workout: day title ≤ 4 words with no parentheticals, coachNotes ≤ 30 words as an imperative cue, exercise notes ≤ 12 words. Your reasoning and caveats belong in your chat reply, never in the plan.",
     strict: true,
     input_schema: {
       type: 'object',
@@ -202,7 +204,19 @@ function makeHandlers(
       // Route through the safety-review gate: the change is STAGED for Jason's
       // approval, never applied silently. Tell the model so its reply reflects
       // that the plan is pending rather than already in effect.
-      const pending = await stageProgramReplacement(input.week, reason);
+      let pending: Awaited<ReturnType<typeof stageProgramReplacement>>;
+      try {
+        pending = await stageProgramReplacement(input.week, reason);
+      } catch (e) {
+        if (!(e instanceof ProgramSafetyError)) throw e;
+        // An integrity guard refused the week (empty, gutted, or dates that do
+        // not form one Monday-to-Sunday week). Nothing was staged — say so
+        // rather than letting a retry loop hide it from Jason.
+        return {
+          content: `${e.message} Tell Jason plainly that the plan was NOT staged and why. You may try ONCE more with a corrected full week; if it fails again, stop and say so.`,
+          isError: true,
+        };
+      }
       events.push({
         tool: 'update_weekly_program',
         summary: '🛡️ Reviewed — awaiting your approval',
@@ -211,8 +225,19 @@ function makeHandlers(
         'status' in pending.review
           ? 'The independent safety review was unavailable, so it is staged UNREVIEWED — flag that Jason should check it himself.'
           : pending.review.summary;
+      // Hand the STAGED week back verbatim. Jason's complaint: "i cannot see the
+      // actual workout just being told that it has been updated" — the coach can
+      // only tell him what it programmed if it is told what was actually staged
+      // (which is the reviewer-revised week, not necessarily what it sent).
       return {
-        content: `The updated plan has been staged and is awaiting Jason's approval in the Week tab — it has NOT been applied yet. Independent review: ${reviewSummary} In your reply, tell Jason the plan is ready for him to approve or discard; do NOT claim it is already in effect.`,
+        content: `The updated plan has been staged and is awaiting Jason's approval in the Week tab — it has NOT been applied yet.
+
+WEEK AS STAGED (this is what he will see — report it, and note anything the reviewer changed):
+${summarizeWeek(pending.program)}
+
+Independent review: ${reviewSummary}
+
+In your reply, STATE WHAT YOU PROGRAMMED — the training days with their exercises and sets×reps, in a short list, naming rest days in one line — then say it is ready for him to approve or discard in the Week tab. Do NOT claim it is already in effect, and do NOT reply with only "it's been staged".`,
       };
     },
 

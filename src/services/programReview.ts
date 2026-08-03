@@ -25,6 +25,14 @@
 //      repeat across days, and how many DISTINCT exercises cover each muscle
 //      group. Counting only: whether a repetition is justified (a prescribed
 //      corrective) is the reviewer's judgement, never the counter's.
+//   1c. computePatternStats() — PURE TS, folded into the same text block. Third
+//      incident (Aug 2026): chest-supported row on Mon, one-arm row on Wed,
+//      inverted row on Fri. Nothing repeated, three distinct movements for
+//      middle back — and 1b saw nothing, because all three are the SAME movement
+//      pattern (horizontal pull) with no vertical pulling in the week at all.
+//      So: classify every exercise by pattern and count patterns per day, per
+//      group, and against their counterparts. Pattern findings are CAUTIONS
+//      only — a physio may legitimately prescribe one pattern during rehab.
 //   2. reviewProgram() / reviewAndStage() — one skeptical-reviewer MODELS.coach
 //      call (structured verdict); on any must_fix, ONE revision pass through the
 //      program-generation machinery, then a single re-review. The final week is
@@ -39,10 +47,19 @@ import type {
   ReviewVerdict,
 } from '../types';
 import { getEntry, normalize } from './exerciseDb';
+import {
+  patternForExercise,
+  isMajorPattern,
+  COUNTERPART_PAIRS,
+  PATTERN_LABEL,
+  PATTERN_EXAMPLES,
+  type MovementPattern,
+} from './movementPattern';
 import { getCached } from './driveSync';
 import { getWeekStart } from '../utils/date';
 import { MODELS, callClaudeStructured } from './claude';
 import { reviseProgramForReview } from './program';
+import { assertWeekHasExercises } from './programGuard';
 import { savePendingProgram } from './storage';
 
 // ─────────────────────────────────────────────────────────────
@@ -60,6 +77,13 @@ export const REPEAT_CAUTION_DAYS = 2; // same exercise on this many days → cau
 export const REPEAT_MUST_FIX_DAYS = 3; // …on this many → must_fix (unless prescribed)
 export const LOW_VARIETY_MIN_SETS = 8; // a group only counts as "meaningful volume" here
 export const LOW_VARIETY_MAX_DISTINCT = 1; // …covered by at most this many movements
+
+// Movement-pattern thresholds (the "three different rows are still three
+// horizontal pulls" half). Deliberately the same shape as the repetition
+// thresholds above, but they never produce a must_fix — see REVIEW_INSTRUCTIONS.
+export const PATTERN_REPEAT_DAYS = 3; // one pattern on this many days → caution
+export const PATTERN_MONO_MIN_SETS = 8; // group volume bar for a single-pattern funnel
+export const PATTERN_COUNTERPART_MIN_SETS = 8; // …and for a missing counterpart
 
 export interface RedFlag {
   kind: 'high_weekly_volume' | 'volume_jump' | 'high_session_volume';
@@ -365,6 +389,70 @@ export function computeVolumeStats(
 // Variety / repetition stats (deterministic — code counts, LLM judges)
 // ─────────────────────────────────────────────────────────────
 
+export interface PatternUsage {
+  pattern: MovementPattern;
+  /** Human label, e.g. "horizontal pull". */
+  label: string;
+  /** Dates the pattern is trained on, in week order. */
+  dates: string[];
+  /** "date (day title)" labels, aligned with `dates`. */
+  dayLabels: string[];
+  /** DISTINCT days the pattern appears on. */
+  dayCount: number;
+  /** Total weekly sets in this pattern. */
+  sets: number;
+  /** The distinct exercises carrying it, most sets first. */
+  exercises: string[];
+}
+
+export interface GroupPatternConcentration {
+  group: string;
+  /** Weekly sets for the group that were classifiable at all. */
+  sets: number;
+  pattern: MovementPattern;
+  label: string;
+  /** Sets in that single pattern (equal to `sets` — it is the only one). */
+  patternSets: number;
+  /** How many DIFFERENT exercises share the one pattern (always ≥ 2 here). */
+  distinctExercises: number;
+  exercises: string[];
+}
+
+export interface PatternImbalance {
+  present: MovementPattern;
+  presentLabel: string;
+  absent: MovementPattern;
+  absentLabel: string;
+  sets: number;
+  dayCount: number;
+  /** Concrete conventional movements from the absent pattern. */
+  examples: string;
+}
+
+export interface PatternStats {
+  /** Every pattern used this week, most days (then most sets) first. */
+  byPattern: PatternUsage[];
+  /**
+   * A single pattern on PATTERN_REPEAT_DAYS+ days carried by ≥ 2 DIFFERENT
+   * exercises. Single-exercise repeats are excluded on purpose: the per-exercise
+   * repetition rule already owns those, and reporting both double-reports one
+   * problem.
+   */
+  patternsOnManyDays: PatternUsage[];
+  /**
+   * Muscle groups with meaningful volume funnelled through ONE major pattern by
+   * ≥ 2 different exercises (the "three different rows" case). Groups covered by
+   * a single exercise are left to lowVarietyGroups, again to avoid duplication.
+   */
+  singlePatternGroups: GroupPatternConcentration[];
+  /** A pattern at volume whose counterpart has ZERO sets this week. */
+  missingCounterparts: PatternImbalance[];
+  /** Exercise names that did not classify into a pattern (ignored by the flags). */
+  unclassified: string[];
+  /** Human-readable block for the reviewer prompt. */
+  text: string;
+}
+
 export interface ExerciseOccurrence {
   /** Identity key: the normalized name first seen for this movement. */
   key: string;
@@ -407,6 +495,8 @@ export interface VarietyStats {
   sameExerciseOn2Days: boolean;
   /** Groups with ≥ LOW_VARIETY_MIN_SETS weekly sets from ≤ 1 distinct movement. */
   lowVarietyGroups: GroupVariety[];
+  /** Movement-pattern half of the same question (different names, same pattern). */
+  patterns: PatternStats;
   /** Human-readable block for the reviewer prompt. */
   text: string;
 }
@@ -480,7 +570,244 @@ function buildVarietyText(stats: Omit<VarietyStats, 'text'>): string {
     lines.push('No deterministic repetition flags tripped.');
   }
 
+  // The pattern block rides in the same text: same "pre-computed, do not
+  // recount" contract, one layer deeper (names vs patterns).
+  lines.push('', stats.patterns.text);
+
   return lines.join('\n');
+}
+
+// ─────────────────────────────────────────────────────────────
+// Movement-pattern stats — the gap the per-exercise counter cannot see.
+//
+// Aug 2026: chest-supported row (Mon) + one-arm row (Wed) + inverted row (Fri).
+// Zero repeated exercises, three distinct movements for middle back, and yet the
+// whole week's back work is one movement pattern with no vertical pulling in it.
+// ─────────────────────────────────────────────────────────────
+
+const PATTERN_OTHER: MovementPattern = 'other';
+
+function buildPatternText(stats: Omit<PatternStats, 'text'>): string {
+  const lines: string[] = [];
+  lines.push(
+    'WEEKLY MOVEMENT PATTERNS — every exercise classified by movement pattern, pre-computed for the proposed week. These counts are authoritative; do not reclassify or recount from the JSON. Three DIFFERENT exercises can still be one pattern (three rows are all horizontal pulls).'
+  );
+
+  const used = stats.byPattern.filter((p) => p.pattern !== PATTERN_OTHER);
+  if (used.length > 0) {
+    lines.push('PATTERN USE (distinct days / weekly sets):');
+    for (const p of used) {
+      lines.push(
+        `  ${p.label}: ${p.dayCount} day${p.dayCount === 1 ? '' : 's'}, ${p.sets} sets — ${p.dayLabels.join(', ')} — ${p.exercises.join(', ')}`
+      );
+    }
+  } else {
+    lines.push('No exercise in this week classified into a movement pattern.');
+  }
+
+  for (const p of stats.patternsOnManyDays) {
+    lines.push(
+      `  ⚠ SAME PATTERN ON ${p.dayCount} DAYS: ${p.label} on ${p.dayLabels.join(', ')} via ${p.exercises.length} different exercises (${p.exercises.join(', ')}) — different names, one pattern.`
+    );
+  }
+
+  for (const g of stats.singlePatternGroups) {
+    lines.push(
+      `  ⚠ SINGLE-PATTERN GROUP: ${g.group} gets all ${g.patternSets} of its classified weekly sets from ${g.label} (${g.exercises.join(', ')}) — ${g.distinctExercises} different exercises, one pattern.`
+    );
+  }
+
+  for (const m of stats.missingCounterparts) {
+    lines.push(
+      `  ⚠ MISSING COUNTERPART: ${m.presentLabel} is programmed ${m.sets} sets across ${m.dayCount} day${m.dayCount === 1 ? '' : 's'}, while ${m.absentLabel} has ZERO sets this week. Options in the missing pattern: ${m.examples}.`
+    );
+  }
+
+  if (stats.unclassified.length > 0) {
+    lines.push(
+      `Not classified into any pattern (excluded from the pattern flags): ${stats.unclassified.join(', ')}.`
+    );
+  }
+
+  if (
+    stats.patternsOnManyDays.length === 0 &&
+    stats.singlePatternGroups.length === 0 &&
+    stats.missingCounterparts.length === 0
+  ) {
+    lines.push('No deterministic movement-pattern flags tripped.');
+  } else {
+    lines.push(
+      'These pattern flags often describe ONE underlying problem (e.g. rows on every day, no vertical pull) — raise it once, not once per line.'
+    );
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * PURE. Movement-pattern stats for a proposed week: how many distinct days and
+ * sets each pattern gets, which muscle groups are funnelled through a single
+ * pattern despite using several exercises, and which pattern is completely
+ * absent while its counterpart is trained at volume.
+ *
+ * Deliberately does NOT duplicate the per-exercise counters: a pattern that is
+ * concentrated only because ONE exercise repeats is left to computeVarietyStats,
+ * whose repetition rules already cover it. Classification is name-first (the
+ * exercise-index entry only disambiguates), and anything unclassified is listed
+ * by name and excluded from every flag rather than guessed at.
+ *
+ * Counting ONLY. Whether a concentration is a legitimate prescription — a
+ * physio-led posterior-chain block, an injury that rules out overhead work — is
+ * the reviewer's judgement against training-status, never the counter's.
+ */
+export function computePatternStats(week: WeeklyProgram): PatternStats {
+  const acc = new Map<
+    MovementPattern,
+    {
+      dates: string[];
+      dayLabels: string[];
+      sets: number;
+      byKey: Map<string, { name: string; sets: number }>;
+    }
+  >();
+  // group → pattern → { sets, exercises }
+  const groupAcc = new Map<
+    string,
+    Map<MovementPattern, { sets: number; byKey: Map<string, string> }>
+  >();
+  const unclassified = new Set<string>();
+  // Same exercise identity as computeVarietyStats (two spellings sharing one
+  // slug are ONE movement). Without this, a near-duplicate name would look like
+  // two exercises sharing a pattern and get reported twice — once by the
+  // repetition rule, once by the pattern rule.
+  const slugToKey = new Map<string, string>();
+
+  for (const day of week.days) {
+    const seenToday = new Set<MovementPattern>();
+    for (const ex of day.exercises) {
+      const sets = Number.isFinite(ex.sets) ? ex.sets : 0;
+      if (sets <= 0) continue;
+      const pattern = patternForExercise(ex.name, ex.slug ?? null);
+      const key =
+        occurrenceKey(ex.name, ex.slug ?? undefined, slugToKey) ||
+        normalize(ex.name);
+      if (pattern === PATTERN_OTHER) unclassified.add(ex.name);
+
+      let entry = acc.get(pattern);
+      if (!entry) {
+        entry = { dates: [], dayLabels: [], sets: 0, byKey: new Map() };
+        acc.set(pattern, entry);
+      }
+      entry.sets += sets;
+      const prior = entry.byKey.get(key);
+      if (prior) prior.sets += sets;
+      else entry.byKey.set(key, { name: ex.name, sets });
+      if (!seenToday.has(pattern)) {
+        seenToday.add(pattern);
+        entry.dates.push(day.date);
+        entry.dayLabels.push(`${day.date} (${day.title})`);
+      }
+
+      if (pattern === PATTERN_OTHER) continue;
+      for (const g of groupsForSlug(ex.slug) ?? []) {
+        let byPattern = groupAcc.get(g);
+        if (!byPattern) {
+          byPattern = new Map();
+          groupAcc.set(g, byPattern);
+        }
+        let cell = byPattern.get(pattern);
+        if (!cell) {
+          cell = { sets: 0, byKey: new Map() };
+          byPattern.set(pattern, cell);
+        }
+        cell.sets += sets;
+        cell.byKey.set(key, ex.name);
+      }
+    }
+  }
+
+  const byPattern: PatternUsage[] = [...acc.entries()]
+    .map(([pattern, a]) => ({
+      pattern,
+      label: PATTERN_LABEL[pattern],
+      dates: a.dates,
+      dayLabels: a.dayLabels,
+      dayCount: a.dates.length,
+      sets: a.sets,
+      exercises: [...a.byKey.values()]
+        .sort((x, y) => y.sets - x.sets || x.name.localeCompare(y.name))
+        .map((e) => e.name),
+    }))
+    .sort(
+      (a, b) =>
+        b.dayCount - a.dayCount ||
+        b.sets - a.sets ||
+        a.label.localeCompare(b.label)
+    );
+
+  // (a) One pattern on 3+ days — but only when DIFFERENT exercises carry it.
+  const patternsOnManyDays = byPattern.filter(
+    (p) =>
+      isMajorPattern(p.pattern) &&
+      p.dayCount >= PATTERN_REPEAT_DAYS &&
+      p.exercises.length >= 2
+  );
+
+  // (b) A muscle group whose whole classified volume runs through one pattern,
+  //     using two or more exercises (one exercise → lowVarietyGroups' job).
+  const singlePatternGroups: GroupPatternConcentration[] = [];
+  for (const [group, byPat] of groupAcc) {
+    if (group === OTHER || byPat.size !== 1) continue;
+    const [pattern, cell] = [...byPat.entries()][0];
+    if (!isMajorPattern(pattern)) continue;
+    if (cell.sets < PATTERN_MONO_MIN_SETS) continue;
+    if (cell.byKey.size < 2) continue;
+    singlePatternGroups.push({
+      group,
+      sets: cell.sets,
+      pattern,
+      label: PATTERN_LABEL[pattern],
+      patternSets: cell.sets,
+      distinctExercises: cell.byKey.size,
+      exercises: [...cell.byKey.values()],
+    });
+  }
+  singlePatternGroups.sort(
+    (a, b) => b.sets - a.sets || a.group.localeCompare(b.group)
+  );
+
+  // (c) A pattern at volume whose counterpart is entirely missing.
+  const missingCounterparts: PatternImbalance[] = [];
+  const usage = new Map(byPattern.map((p) => [p.pattern, p]));
+  for (const [a, b] of COUNTERPART_PAIRS) {
+    for (const [present, absent] of [
+      [a, b],
+      [b, a],
+    ] as Array<[MovementPattern, MovementPattern]>) {
+      const p = usage.get(present);
+      if (!p || p.sets < PATTERN_COUNTERPART_MIN_SETS) continue;
+      if ((usage.get(absent)?.sets ?? 0) > 0) continue;
+      missingCounterparts.push({
+        present,
+        presentLabel: PATTERN_LABEL[present],
+        absent,
+        absentLabel: PATTERN_LABEL[absent],
+        sets: p.sets,
+        dayCount: p.dayCount,
+        examples: PATTERN_EXAMPLES[absent],
+      });
+    }
+  }
+  missingCounterparts.sort((x, y) => y.sets - x.sets);
+
+  const partial: Omit<PatternStats, 'text'> = {
+    byPattern,
+    patternsOnManyDays,
+    singlePatternGroups,
+    missingCounterparts,
+    unclassified: [...unclassified],
+  };
+  return { ...partial, text: buildPatternText(partial) };
 }
 
 /**
@@ -587,6 +914,7 @@ export function computeVarietyStats(week: WeeklyProgram): VarietyStats {
       (o) => o.dayCount === REPEAT_CAUTION_DAYS
     ),
     lowVarietyGroups,
+    patterns: computePatternStats(week),
   };
   return { ...partial, text: buildVarietyText(partial) };
 }
@@ -606,6 +934,7 @@ const REVIEW_INSTRUCTIONS = `Weigh these deterministic red flags (already comput
 - Any single session with more than ${SESSION_SET_CEILING} sets for one muscle group.
 - Any contradiction with an injury, niggle, or watch-item in the training-status snapshot (e.g. loading a joint the status says to protect, or reintroducing a movement that was removed for pain).
 - Any exercise repeated across days, and any low-variety muscle group (both counted exactly for you in the WEEKLY VARIETY block).
+- Any movement-pattern concentration — one pattern on several days, a muscle group funnelled through a single pattern, or a pattern whose counterpart is missing entirely (all counted exactly for you in the WEEKLY MOVEMENT PATTERNS block).
 
 Judgement rules:
 - A jump to injury-risk volume for a muscle group, or programming that directly loads an area flagged in training-status, is a MUST_FIX.
@@ -617,6 +946,14 @@ VARIETY / MONOTONY (Jason has asked for this explicitly — he wants range of mo
 - The same exercise on exactly ${REPEAT_CAUTION_DAYS} days is a CAUTION worth one suggestion (same corrective exemption applies).
 - Call out any muscle group listed as LOW-VARIETY: meaningful weekly volume funnelled through a single movement. The corrective exemption applies here too — a group whose volume is simply a prescribed corrective repeated as instructed (e.g. shoulders covered only by face pulls) is not a variety problem.
 - Every variety suggestion must NAME a concrete substitute movement using a conventional gym exercise name ("swap Friday's chest-supported row for a one-arm dumbbell row"), never a bare "add more variety". Vary the movement, angle, grip, or machine-vs-free-weight — not just the name.
+
+MOVEMENT PATTERNS (the deeper version of the same ask — three different rows are still three horizontal pulls, which is exactly what Jason complained about):
+- CHECK THE TRAINING STATUS FIRST. If the pattern concentration is explicitly prescribed there — a physio-led posterior-first or posterior-chain reintroduction, a phase that deliberately holds back overhead pressing or vertical pulling, an injury or restriction that rules a pattern out — then it is INTENTIONAL: say in one clause that it is prescribed and do NOT raise it as a concern. Never argue with a genuine clinical prescription.
+- Otherwise, the same movement pattern on ${PATTERN_REPEAT_DAYS} or more days (flagged as SAME PATTERN ON N DAYS) is a CAUTION — never a must_fix. Name the day and a concrete replacement from a DIFFERENT pattern: "swap Friday's inverted row for a lat pulldown or assisted pull-up".
+- A muscle group carrying ${PATTERN_MONO_MIN_SETS}+ weekly sets entirely through one pattern (SINGLE-PATTERN GROUP), or a pattern trained at volume whose counterpart has zero sets (MISSING COUNTERPART — horizontal vs vertical pulling, horizontal vs vertical pressing, hinge vs squat), is a CAUTION on the same terms: name the day and the specific movement to add.
+- Pattern findings are CAUTIONS even when several fire at once. They are about range of motion and hitting the area from different angles, not safety.
+- Do NOT report the same problem twice. If a repeated EXERCISE already explains a concentration, raise it once under the repetition rules above. Several pattern lines describing one concentration (rows on every day AND back funnelled through rows AND no vertical pull) are ONE concern, not three.
+- Swapping the implement, the machine or the grip is NOT variety if the pattern is unchanged — a dumbbell row instead of a cable row is still a horizontal pull.
 
 OUTPUT STYLE (strict — Jason reads this on a phone, inside an approval card):
 - summary: ONE sentence, ≤ 20 words, plain language.
@@ -757,6 +1094,10 @@ async function stage(
   source: PendingProgram['source'],
   revisedByReviewer: boolean
 ): Promise<PendingProgram> {
+  // Last checkpoint before storage: a week with no exercises on ANY day is never
+  // something the coach meant to program — it is what a content-dropping bug
+  // looks like. Refuse loudly rather than staging it (see programGuard.ts).
+  assertWeekHasExercises(program.days, 'this week');
   const pending: PendingProgram = {
     program,
     review,

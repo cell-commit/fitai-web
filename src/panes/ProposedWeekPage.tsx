@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { WeeklyProgram, ProgramDay, PendingProgram } from '../types';
 import { dayContentChanged, weekDates, weekRangeLabel } from '../services/program';
+import { resolveWeekStart } from '../services/programGuard';
 import { FOCUS_LABELS, WEEKDAYS } from './focus';
 import { ChevronRightIcon } from '../components/icons';
 import { ClampText } from '../components/ClampText';
@@ -47,9 +48,16 @@ export function ProposedWeekPage({
   const unreviewed = review === null;
   const concerns = review?.concerns ?? [];
 
+  // Render against the week the days THEMSELVES belong to, not the stored
+  // weekStart field. A proposal staged before that field was derived from the
+  // days can carry a different week's Monday, and looking each date up in a
+  // seven-day grid built from the wrong Monday misses every day — which is what
+  // showed seven empty "Rest · 0 exercises" rows for a fully populated week.
+  const weekStart = resolveWeekStart(program);
+
   // Only compare against an active week covering the same dates; a proposal for
   // a different week has nothing meaningful to diff against.
-  const comparable = !!active && active.weekStart === program.weekStart;
+  const comparable = !!active && resolveWeekStart(active) === weekStart;
   const activeByDate = new Map(
     comparable ? (active as WeeklyProgram).days.map((d) => [d.date, d]) : []
   );
@@ -95,7 +103,7 @@ export function ProposedWeekPage({
 
       <div className="pane pane--with-cta">
         <h2 className="daydetail__title">Proposed week</h2>
-        <p className="pane__subtitle">{weekRangeLabel(program.weekStart)}</p>
+        <p className="pane__subtitle">{weekRangeLabel(weekStart)}</p>
 
         <div className={`pwreview${unreviewed ? ' pwreview--unreviewed' : ''}`}>
           <div className="pwreview__head">
@@ -142,7 +150,7 @@ export function ProposedWeekPage({
         <div className="week-section-label">Proposed days — tap to view</div>
 
         <div className="pweek" data-testid="proposed-week-days">
-          {weekDates(program.weekStart).map((date, i) => {
+          {weekDates(weekStart).map((date, i) => {
             const day = program.days.find((d) => d.date === date);
             const changed =
               comparable && dayContentChanged(day, activeByDate.get(date) ?? null);

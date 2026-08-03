@@ -207,6 +207,35 @@ describe('ProposedWeekPage — day rows', () => {
   });
 });
 
+describe('ProposedWeekPage — a proposal whose weekStart disagrees with its days', () => {
+  // The Aug 2026 data-loss report: the reviewer's verdict discussed real
+  // exercises while every row read "Rest · 0 exercises · Changed". The staged
+  // record carried the PREVIOUS week's weekStart with the CURRENT week's day
+  // dates, so weekDates(weekStart) → days.find(date) missed all seven times.
+  // Records like that already exist in storage, so the page must render the
+  // week its DAYS belong to, not the field.
+  const MISLABELLED = week(PROPOSED.days, '2026-07-06');
+
+  it('still shows every proposed day and its exercise count', () => {
+    renderPage({ pending: pending(MISLABELLED), active: ACTIVE });
+
+    expect(rows()).toHaveLength(7);
+    expect(rowFor('Mon').textContent).toContain('Push');
+    expect(rowFor('Mon').textContent).toContain('2 exercises');
+    expect(rowFor('Wed').textContent).toContain('1 exercise');
+    expect(rowFor('Fri').textContent).toContain('Light Full Body');
+    // Only the genuinely empty days are empty.
+    expect(rows().filter((r) => r.textContent?.includes('0 exercises'))).toHaveLength(4);
+  });
+
+  it('dates the header from the days, and still diffs against the active week', () => {
+    renderPage({ pending: pending(MISLABELLED), active: ACTIVE });
+    expect(screen.getByText(/Mon 13 Jul/)).toBeInTheDocument();
+    // Two real differences — not seven phantom ones.
+    expect(screen.getAllByText('Changed')).toHaveLength(2);
+  });
+});
+
 describe('ProposedWeekPage — proposed-day page', () => {
   it('opens a read-only day page and comes back', async () => {
     const user = userEvent.setup();

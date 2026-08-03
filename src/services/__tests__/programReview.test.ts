@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import {
   computeVolumeStats,
   computeVarietyStats,
+  computePatternStats,
   reviewAndStage,
 } from '../programReview';
 import { saveSettings, getPendingProgram } from '../storage';
@@ -51,6 +52,11 @@ const LATS = 'Wide-Grip_Lat_Pulldown';
 const MIDBACK2 = 'Seated_Cable_Rows';
 const MIDBACK3 = 'One-Arm_Dumbbell_Row';
 const SHOULDERS = 'Face_Pull';
+// The August week that exposed the pattern gap:
+//   Inverted_Row          → middle back (a third, different horizontal pull)
+//   Reverse_Machine_Flyes → shoulders   (rear delt work, not a pull)
+const MIDBACK4 = 'Inverted_Row';
+const REARDELT = 'Reverse_Machine_Flyes';
 
 // ── computeVolumeStats ────────────────────────────────────────
 
@@ -334,6 +340,218 @@ describe('computeVarietyStats', () => {
   });
 });
 
+// ── computePatternStats ───────────────────────────────────────
+// The gap computeVarietyStats could not see: Mon chest-supported row, Wed
+// one-arm row, Fri inverted row. Nothing repeats, three distinct movements
+// cover middle back — and every one of them is a horizontal pull, with no
+// vertical pulling in the week at all.
+
+/** Jason's actual week (Aug 2026), with the face pulls he does on purpose. */
+function threeRowWeek(): WeeklyProgram {
+  return week([
+    day('2026-07-13', 'push', 'Push', [
+      ex('Chest-Supported Row', MIDBACK, 3),
+      ex('Face Pull', SHOULDERS, 2),
+    ]),
+    day('2026-07-15', 'pull', 'Pull', [
+      ex('One-Arm Dumbbell Row', MIDBACK3, 3),
+      ex('Reverse Pec Deck', REARDELT, 2),
+    ]),
+    day('2026-07-17', 'fullbody', 'Full Body', [
+      ex('Inverted Row', MIDBACK4, 3),
+      ex('Face Pull', SHOULDERS, 2),
+    ]),
+  ]);
+}
+
+describe('computePatternStats', () => {
+  it('sees one pattern behind three different rows, on three days', () => {
+    const stats = computePatternStats(threeRowWeek());
+
+    const hp = stats.byPattern.find((p) => p.pattern === 'horizontal_pull')!;
+    expect(hp.dayCount).toBe(3);
+    expect(hp.sets).toBe(9);
+    expect(hp.exercises.sort()).toEqual([
+      'Chest-Supported Row',
+      'Inverted Row',
+      'One-Arm Dumbbell Row',
+    ]);
+
+    expect(stats.patternsOnManyDays.map((p) => p.pattern)).toEqual([
+      'horizontal_pull',
+    ]);
+    expect(stats.text).toContain('SAME PATTERN ON 3 DAYS');
+    expect(stats.text).toContain('different names, one pattern');
+  });
+
+  it('flags the muscle group funnelled through a single pattern', () => {
+    const stats = computePatternStats(threeRowWeek());
+
+    expect(stats.singlePatternGroups).toHaveLength(1);
+    const g = stats.singlePatternGroups[0];
+    expect(g.group).toBe('middle back');
+    expect(g.pattern).toBe('horizontal_pull');
+    expect(g.patternSets).toBe(9);
+    expect(g.distinctExercises).toBe(3);
+    expect(stats.text).toContain('SINGLE-PATTERN GROUP');
+  });
+
+  it('flags the missing counterpart — rows at volume, zero vertical pulling', () => {
+    const stats = computePatternStats(threeRowWeek());
+
+    expect(stats.missingCounterparts).toHaveLength(1);
+    const m = stats.missingCounterparts[0];
+    expect(m.present).toBe('horizontal_pull');
+    expect(m.absent).toBe('vertical_pull');
+    expect(m.sets).toBe(9);
+    expect(m.dayCount).toBe(3);
+    // The reviewer is handed real movements to suggest, not "add variety".
+    expect(m.examples).toMatch(/lat pulldown/i);
+    expect(stats.text).toContain('MISSING COUNTERPART');
+    expect(stats.text).toMatch(/ZERO sets/);
+  });
+
+  it('never treats the deliberate face-pull corrective as a pattern problem', () => {
+    const stats = computePatternStats(threeRowWeek());
+
+    // Face pulls + reverse pec deck are on all three days and are shoulder
+    // correctives, not horizontal pulls — the whole point of classifying them
+    // separately. They must not appear in any pattern flag.
+    const shoulders = stats.byPattern.find(
+      (p) => p.pattern === 'shoulder_isolation'
+    )!;
+    expect(shoulders.dayCount).toBe(3);
+    expect(stats.patternsOnManyDays.map((p) => p.pattern)).not.toContain(
+      'shoulder_isolation'
+    );
+    expect(
+      stats.byPattern.find((p) => p.pattern === 'horizontal_pull')!.exercises
+    ).not.toContain('Face Pull');
+  });
+
+  it('clears every pattern flag once one row becomes a lat pulldown', () => {
+    const fixed = week([
+      day('2026-07-13', 'push', 'Push', [
+        ex('Chest-Supported Row', MIDBACK, 3),
+        ex('Face Pull', SHOULDERS, 2),
+      ]),
+      day('2026-07-15', 'pull', 'Pull', [
+        ex('One-Arm Dumbbell Row', MIDBACK3, 3),
+        ex('Reverse Pec Deck', REARDELT, 2),
+      ]),
+      day('2026-07-17', 'fullbody', 'Full Body', [
+        ex('Lat Pulldown', LATS, 3), // was the inverted row
+        ex('Face Pull', SHOULDERS, 2),
+      ]),
+    ]);
+
+    const stats = computePatternStats(fixed);
+
+    expect(stats.patternsOnManyDays).toEqual([]);
+    expect(stats.singlePatternGroups).toEqual([]);
+    expect(stats.missingCounterparts).toEqual([]);
+    expect(stats.text).toContain('No deterministic movement-pattern flags tripped');
+  });
+
+  it('keeps the day flag when a pulldown is ADDED but all three rows stay', () => {
+    const added = threeRowWeek();
+    added.days[1].exercises.push(ex('Lat Pulldown', LATS, 3));
+
+    const stats = computePatternStats(added);
+
+    // The imbalance is answered — there IS vertical pulling now…
+    expect(stats.missingCounterparts).toEqual([]);
+    // …but three rows on three days is still one pattern three days running.
+    expect(stats.patternsOnManyDays.map((p) => p.pattern)).toEqual([
+      'horizontal_pull',
+    ]);
+    expect(stats.singlePatternGroups.map((g) => g.group)).toEqual(['middle back']);
+  });
+
+  it('leaves single-exercise repetition to the repetition rules (no double-report)', () => {
+    // The ORIGINAL complaint: one row, three days. The per-exercise counter owns
+    // this; the pattern flags stay silent so the reviewer sees it once.
+    const proposed = week([
+      day('2026-07-13', 'push', 'Push', [ex('Chest-Supported Row', MIDBACK, 4)]),
+      day('2026-07-15', 'pull', 'Pull', [ex('Chest-Supported Row', MIDBACK, 4)]),
+      day('2026-07-17', 'fullbody', 'Full Body', [
+        ex('Chest-Supported Row', MIDBACK, 4),
+      ]),
+    ]);
+
+    const variety = computeVarietyStats(proposed);
+    expect(variety.sameExerciseOn3PlusDays).toBe(true);
+    expect(variety.lowVarietyGroups.map((g) => g.group)).toEqual(['middle back']);
+
+    expect(variety.patterns.patternsOnManyDays).toEqual([]);
+    expect(variety.patterns.singlePatternGroups).toEqual([]);
+    // The counterpart flag is a different observation (no vertical pull at all),
+    // so it still stands.
+    expect(variety.patterns.missingCounterparts.map((m) => m.absent)).toEqual([
+      'vertical_pull',
+    ]);
+  });
+
+  it('uses the same exercise identity as the repetition counter', () => {
+    // Two spellings, one slug → ONE movement on three days. That is the
+    // repetition rule's problem, not the pattern rule's; counting the spellings
+    // separately would report the same week twice.
+    const proposed = week([
+      day('2026-07-13', 'push', 'Push', [ex('Chest-Supported Row', MIDBACK, 4)]),
+      day('2026-07-15', 'pull', 'Pull', [ex('Chest Supported Row', MIDBACK, 4)]),
+      day('2026-07-17', 'fullbody', 'Full Body', [
+        ex('Chest-Supported Row Machine', MIDBACK, 4),
+      ]),
+    ]);
+
+    const stats = computePatternStats(proposed);
+    const hp = stats.byPattern.find((p) => p.pattern === 'horizontal_pull')!;
+    expect(hp.dayCount).toBe(3);
+    expect(hp.exercises).toHaveLength(1);
+    expect(stats.patternsOnManyDays).toEqual([]);
+    expect(stats.singlePatternGroups).toEqual([]);
+    expect(computeVarietyStats(proposed).sameExerciseOn3PlusDays).toBe(true);
+  });
+
+  it('lists unclassifiable exercises instead of guessing a pattern for them', () => {
+    const proposed = week([
+      day('2026-07-13', 'fullbody', 'Full Body', [
+        ex('Foam Roll Thoracic Spine', undefined, 2),
+        ex('Chest-Supported Row', MIDBACK, 3),
+      ]),
+    ]);
+
+    const stats = computePatternStats(proposed);
+    expect(stats.unclassified).toEqual(['Foam Roll Thoracic Spine']);
+    expect(stats.text).toContain('Not classified into any pattern');
+    expect(stats.byPattern.map((p) => p.pattern)).not.toContain('vertical_pull');
+  });
+
+  it('applies the same rule to pressing and to hinge vs squat', () => {
+    const legs = week([
+      day('2026-07-13', 'legs', 'Legs', [
+        ex('Back Squat', undefined, 5),
+        ex('Leg Press', undefined, 4),
+      ]),
+    ]);
+    const stats = computePatternStats(legs);
+    const m = stats.missingCounterparts[0];
+    expect(m.present).toBe('squat');
+    expect(m.absent).toBe('hip_hinge');
+    expect(m.examples).toMatch(/Romanian deadlift/i);
+  });
+
+  it('rides along in computeVarietyStats and its text block', () => {
+    const variety = computeVarietyStats(threeRowWeek());
+    expect(variety.patterns.missingCounterparts).toHaveLength(1);
+    expect(variety.text).toContain('WEEKLY VARIETY');
+    expect(variety.text).toContain('WEEKLY MOVEMENT PATTERNS');
+    expect(variety.text).toContain('MISSING COUNTERPART');
+    // Same authoritative framing as the volume and repetition blocks.
+    expect(variety.text).toMatch(/do not reclassify or recount/i);
+  });
+});
+
 // ── reviewAndStage orchestration ──────────────────────────────
 
 function claudeText(obj: unknown): ClaudeResponse {
@@ -453,6 +671,63 @@ describe('reviewAndStage', () => {
     expect(userText).toMatch(/corrective/i);
     expect(userText).toMatch(/LOW-VARIETY/);
     expect(userText).toMatch(/NAME a concrete substitute movement/);
+  });
+
+  it('sends the movement-pattern stats AND the pattern rules to the reviewer', async () => {
+    mockFetch.mockResolvedValueOnce(
+      fetchReturning(claudeText({ approved: true, summary: 'Fine.', concerns: [] }))
+    );
+
+    await reviewAndStage(threeRowWeek(), {
+      reason: 'test',
+      source: 'generate',
+      previous: null,
+      recentLogs: [],
+    });
+
+    const userText = JSON.parse(mockFetch.mock.calls[0][1].body).messages[0]
+      .content as string;
+
+    // Pre-computed, authoritative, and specific about this week.
+    expect(userText).toContain('WEEKLY MOVEMENT PATTERNS');
+    expect(userText).toContain('SAME PATTERN ON 3 DAYS');
+    expect(userText).toContain('SINGLE-PATTERN GROUP');
+    expect(userText).toContain('MISSING COUNTERPART');
+    expect(userText).toMatch(/horizontal pull/);
+    expect(userText).toMatch(/vertical pull/);
+
+    // …and the rules that turn them into a verdict.
+    expect(userText).toMatch(/MOVEMENT PATTERNS \(the deeper version/);
+    expect(userText).toMatch(/three different rows are still three horizontal pulls/i);
+    expect(userText).toMatch(/is a CAUTION — never a must_fix/);
+    expect(userText).toMatch(/lat pulldown or assisted pull-up/);
+    expect(userText).toMatch(/NOT variety if the pattern is unchanged/);
+    expect(userText).toMatch(/Do NOT report the same problem twice/);
+  });
+
+  it('tells the reviewer to stand down when the training status prescribes the pattern', async () => {
+    mockFetch.mockResolvedValueOnce(
+      fetchReturning(claudeText({ approved: true, summary: 'Fine.', concerns: [] }))
+    );
+
+    await reviewAndStage(threeRowWeek(), {
+      reason: 'posterior-first reintroduction week',
+      source: 'generate',
+      previous: null,
+      recentLogs: [],
+    });
+
+    const userText = JSON.parse(mockFetch.mock.calls[0][1].body).messages[0]
+      .content as string;
+
+    // A physio may legitimately prescribe one pattern during rehab, so the rule
+    // must never fight a genuine clinical prescription.
+    expect(userText).toMatch(/CHECK THE TRAINING STATUS FIRST/);
+    expect(userText).toMatch(/posterior-first/i);
+    expect(userText).toMatch(/do NOT raise it as a concern/i);
+    expect(userText).toMatch(/Never argue with a genuine clinical prescription/i);
+    // The status snapshot itself is in the prompt for that check to be possible.
+    expect(userText).toContain('TRAINING STATUS');
   });
 
   it('must_fix → runs the revision pass exactly once and re-reviews the result', async () => {
