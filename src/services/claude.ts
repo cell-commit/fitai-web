@@ -296,13 +296,28 @@ export async function callClaudeText(opts: CallClaudeOptions): Promise<string> {
   return firstText(response);
 }
 
-export function guardStopReason(response: ClaudeResponse): void {
+/**
+ * Throw only on an explicit refusal. Split out of guardStopReason so callers
+ * that want to KEEP a truncated partial answer (the coach and nutrition chats)
+ * can reject a refusal without also throwing away everything the model wrote
+ * before it hit max_tokens.
+ */
+export function guardRefusal(response: ClaudeResponse): void {
   if (response.stop_reason === 'refusal') {
     throw new Error(
       response.stop_details?.explanation ??
         'The coach declined to respond to that request.'
     );
   }
+}
+
+/**
+ * Refusal + truncation guard, for callers whose result is only usable complete
+ * (structured JSON, the safety reviewer's verdict). Chat callers should use
+ * guardRefusal and handle `stop_reason === 'max_tokens'` themselves.
+ */
+export function guardStopReason(response: ClaudeResponse): void {
+  guardRefusal(response);
   if (response.stop_reason === 'max_tokens') {
     throw new Error(
       'The response was cut off (hit the token limit). Please try again or simplify the request.'

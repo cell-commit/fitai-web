@@ -216,6 +216,13 @@ export interface ChatMessage {
   timestamp: number;
   /** Images attached to this message (chat photo attachments upgrade). */
   attachments?: ChatAttachment[];
+  /**
+   * Set on an assistant turn that hit the output-token cap mid-answer. The text
+   * that WAS generated is kept (never discarded); the flag is what lets the UI
+   * offer "Continue" and lets the next send tell the model to resume instead of
+   * restarting. Optional so existing stored threads need no migration.
+   */
+  truncated?: boolean;
 }
 
 // Photos

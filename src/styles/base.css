@@ -1408,7 +1408,9 @@ a {
   padding: var(--sp-md) var(--sp-md) 0;
 }
 
-/* Connection / context line under the mode toggle. */
+/* Training-files status + Refresh. Lives in the fixed input bar (see the
+   ".chat__context in the input bar" block near EOF), not at the top of the
+   thread — reaching it there meant scrolling a long conversation. */
 .chat__context {
   display: flex;
   align-items: center;
@@ -1420,6 +1422,9 @@ a {
 
 .chat__context-text {
   flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat__context-refresh {
@@ -1430,6 +1435,10 @@ a {
   font-weight: 600;
   cursor: pointer;
   padding: 2px 4px;
+}
+.chat__context-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .dot {
@@ -1443,6 +1452,9 @@ a {
 }
 .dot--off {
   background: var(--text-muted);
+}
+.dot--warn {
+  background: var(--danger, #e5484d);
 }
 
 /* Message list — natural flow; the input bar is fixed, so leave room for it. */
@@ -2427,6 +2439,51 @@ a {
   font-size: var(--fs-xs, 12px);
   color: var(--danger, #e5484d);
   padding: 0 2px;
+}
+
+/* ── .chat__context in the input bar ──────────────────────────
+   Moved out of the thread header so the Refresh control sits where his thumb
+   already is. A slim strip above the input ROW (not a control inside it): the
+   row is already 📎 + textarea + send, and the status needs words, not an icon. */
+.chat__inputbar .chat__context {
+  padding: 0 2px 2px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--sp-xs);
+  margin-bottom: 2px;
+}
+/* A failed refresh must not read like a successful one. */
+.chat__inputbar .chat__context--failed .chat__context-text {
+  color: var(--danger, #e5484d);
+  /* Let the warning wrap. The healthy states ellipsize happily, but this one
+     ends in the age of the copy in use — the part he needs — and at 375px the
+     single-line clamp cut exactly that off. */
+  white-space: normal;
+  line-height: 1.3;
+}
+
+/* Truncated reply — the partial text stays in the bubble above; this offers
+   the resume. */
+.bubble-cut {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  margin-top: var(--sp-xs);
+  align-self: flex-start;
+}
+.bubble-cut__text {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.bubble-cut__btn {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--r-round);
+  padding: 5px 14px;
+  font-family: var(--font-family);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
 }
 
 /* Pending (not yet sent) thumbnails, above the textarea. */

@@ -20,9 +20,11 @@ import {
 } from '../services/chatAttachments';
 import {
   getCoachContextStatus,
+  isCoachContextStale,
   refreshCoachContext,
   type CoachContextStatus,
 } from '../services/coachContext';
+import { CONTINUE_TEXT } from '../services/coach';
 import { acquireWakeLock } from '../utils/wakeLock';
 import { ChatIcon } from '../components/icons';
 import { Markdown } from '../components/Markdown';
@@ -41,6 +43,19 @@ const INTERRUPTED_COPY =
 
 /** After this long, suggest keeping the screen on (only if we hold no wake lock). */
 const WAKE_HINT_AFTER_S = 20;
+
+/** How long a "Training files updated" / "Already up to date" line lingers. */
+const CONTEXT_NOTE_MS = 4000;
+
+/** Compact relative age for the context line ("2m", "3h", "5d"). */
+function ageLabel(ms: number): string {
+  const m = Math.floor(ms / 60_000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 
 interface SendFailure {
   mode: ChatMode;
@@ -68,6 +83,8 @@ export function CoachPane() {
   const [pending, setPending] = useState<ChatAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [viewer, setViewer] = useState<ChatAttachment | null>(null);
+  const [contextNote, setContextNote] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const sending = phase !== 'idle';
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -78,16 +95,73 @@ export function CoachPane() {
   // Guards the resume path against overlapping runs (mount + visibilitychange,
   // or StrictMode's double effect invocation).
   const resumingRef = useRef(false);
+  // Guards the context refresh the same way, and lets the async body read the
+  // live sending state without re-creating the callback on every phase change.
+  const refreshingRef = useRef(false);
+  const sendingRef = useRef(sending);
+  sendingRef.current = sending;
 
-  // Pull the latest Drive files once on mount so the coach context is fresh, and
-  // load the connection status for the context line. Refresh is NOT per-message
-  // (keeps system bytes stable within the session — design §2.3).
+  /**
+   * Pull the Drive files into the cache and report honestly on the result.
+   *
+   * Refresh happens BETWEEN turns only, never mid-send: the system blocks are
+   * assembled once at the start of a send, so re-pulling underneath it would
+   * change the cached prefix for the next turn and could swap the training
+   * status out from under a reply already in progress. `auto` runs are also
+   * skipped entirely unless the cache is actually stale, so returning to the
+   * foreground mid-conversation does not churn the prompt cache.
+   */
+  const syncContext = useCallback(async (opts: { auto: boolean }) => {
+    if (refreshingRef.current) return;
+    if (opts.auto) {
+      if (sendingRef.current || isSendRunning()) return;
+      if (!(await isCoachContextStale())) {
+        setStatus(await getCoachContextStatus());
+        return;
+      }
+      // Re-check after the await — a send may have started in the meantime.
+      if (sendingRef.current || isSendRunning()) return;
+    }
+    refreshingRef.current = true;
+    if (!opts.auto) setRefreshing(true);
+    try {
+      const result = await refreshCoachContext();
+      setStatus(await getCoachContextStatus());
+      if (!result.ok) {
+        // Never silent: the status line below switches to the failed state.
+        setContextNote(null);
+      } else if (result.changed) {
+        setContextNote('Training files updated');
+      } else if (!opts.auto) {
+        setContextNote('Already up to date');
+      }
+    } finally {
+      refreshingRef.current = false;
+      setRefreshing(false);
+    }
+  }, []);
+
+  // Mount + every return to the foreground: refresh the coach context when the
+  // cached copy has gone stale. Refresh is NOT per-message (keeps system bytes
+  // stable within a send — design §2.3).
   useEffect(() => {
     void (async () => {
-      await refreshCoachContext();
       setStatus(await getCoachContextStatus());
+      await syncContext({ auto: true });
     })();
-  }, []);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void syncContext({ auto: true });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [syncContext]);
+
+  // The "updated" / "up to date" line is transient feedback, not a status.
+  useEffect(() => {
+    if (!contextNote) return;
+    const id = setTimeout(() => setContextNote(null), CONTEXT_NOTE_MS);
+    return () => clearTimeout(id);
+  }, [contextNote]);
 
   // Reclaim blobs whose message was evicted by the 200-message cap. Strictly
   // fire-and-forget: it must never be awaited on the way to a first paint, and a
@@ -354,9 +428,30 @@ export function CoachPane() {
     }
   }
 
-  async function handleRefresh() {
-    await refreshCoachContext();
-    setStatus(await getCoachContextStatus());
+  /**
+   * Resume a reply that hit the output cap. The partial assistant turn is
+   * already persisted and is passed through as history, so the model continues
+   * from where it stopped instead of regenerating the same oversized answer.
+   */
+  async function handleContinue() {
+    if (sending) return;
+    const prior = messages;
+    const sendMode = mode;
+    const optimistic: ChatMessage = {
+      id: `pending-${Date.now()}`,
+      mode: sendMode,
+      role: 'user',
+      text: CONTINUE_TEXT,
+      timestamp: Date.now(),
+    };
+    setMessages([...prior, optimistic]);
+
+    await runWithWakeLock(
+      'sending',
+      () =>
+        performCoachSend(sendMode, CONTINUE_TEXT, prior, 1, { continuation: true }),
+      { mode: sendMode, text: CONTINUE_TEXT }
+    );
   }
 
   const activeFailure = failure && failure.mode === mode ? failure : null;
@@ -411,28 +506,6 @@ export function CoachPane() {
         </button>
       </div>
 
-      {mode === 'coach' && (
-        <div className="chat__context">
-          <span className={status?.hasStatusFile ? 'dot dot--ok' : 'dot dot--off'} />
-          <span className="chat__context-text">
-            {status == null
-              ? 'Checking training files…'
-              : status.hasStatusFile
-                ? 'Training files connected'
-                : status.configured
-                  ? 'Sync on — training files still loading'
-                  : 'No training files connected'}
-          </span>
-          <button
-            className="chat__context-refresh"
-            onClick={handleRefresh}
-            aria-label="Refresh training context"
-          >
-            Refresh
-          </button>
-        </div>
-      )}
-
       <div className="chat__messages">
         {messages.length === 0 && !sending && (
           <div className="chat__empty">
@@ -458,6 +531,11 @@ export function CoachPane() {
             onRetry={handleRetry}
             onDismiss={handleDismiss}
             onOpenAttachment={setViewer}
+            // Only the newest turn can be continued — resuming an older
+            // truncated reply would append to the wrong end of the thread.
+            onContinue={
+              i === messages.length - 1 && !sending ? handleContinue : undefined
+            }
           />
         ))}
 
@@ -510,6 +588,21 @@ export function CoachPane() {
           data-testid="chat-file-input"
           onChange={(e) => void handleFiles(e.target.files)}
         />
+
+        {/* Training-files status + Refresh, directly above the input row.
+            It used to live at the top of the thread, which meant scrolling a
+            long conversation to reach it. This is the only always-visible strip
+            on the screen (the bar is fixed), and the input bar is already a
+            column stacking errors and thumbnails, so it fits without touching
+            the 📎 / textarea / send row. */}
+        {mode === 'coach' && (
+          <ContextLine
+            status={status}
+            note={contextNote}
+            busy={refreshing}
+            onRefresh={() => void syncContext({ auto: false })}
+          />
+        )}
 
         {attachError && <div className="chat__attach-error">{attachError}</div>}
 
@@ -618,18 +711,82 @@ function AttachmentImage({
   return <img className={className} src={url} alt={alt} onClick={onClick} />;
 }
 
+/**
+ * Training-files status, rendered just above the input.
+ *
+ * Three genuinely different states, because collapsing them is what hid the
+ * bug: connected-and-fresh (with how recently), connected-but-the-last-refresh-
+ * FAILED (still answering, but from an unverified copy), and not-configured.
+ * A failed refresh must never read the same as a successful one.
+ */
+function ContextLine({
+  status,
+  note,
+  busy,
+  onRefresh,
+}: {
+  status: CoachContextStatus | null;
+  note: string | null;
+  busy: boolean;
+  onRefresh: () => void;
+}) {
+  const failed = !!status?.error;
+  const age = status?.ageMs != null ? ageLabel(status.ageMs) : null;
+
+  let tone = 'dot dot--off';
+  let text: string;
+  if (status == null) {
+    text = 'Checking training files…';
+  } else if (failed) {
+    tone = 'dot dot--warn';
+    text = age
+      ? `Couldn’t reach your training files — using a copy from ${age}`
+      : 'Couldn’t reach your training files';
+  } else if (status.hasStatusFile) {
+    tone = 'dot dot--ok';
+    text = age ? `Training files · updated ${age}` : 'Training files connected';
+  } else if (status.configured) {
+    tone = 'dot dot--warn';
+    text = 'Sync on — training files not loaded yet';
+  } else {
+    text = 'No training files connected';
+  }
+
+  return (
+    <div
+      className={`chat__context${failed ? ' chat__context--failed' : ''}`}
+      role="status"
+    >
+      <span className={tone} />
+      <span className="chat__context-text">
+        {busy ? 'Refreshing…' : (note ?? text)}
+      </span>
+      <button
+        className="chat__context-refresh"
+        onClick={onRefresh}
+        disabled={busy}
+        aria-label="Refresh training files"
+      >
+        {failed ? 'Retry' : 'Refresh'}
+      </button>
+    </div>
+  );
+}
+
 function Bubble({
   message,
   failure,
   onRetry,
   onDismiss,
   onOpenAttachment,
+  onContinue,
 }: {
   message: ChatMessage;
   failure?: SendFailure | null;
   onRetry?: (failure: SendFailure) => Promise<void>;
   onDismiss?: () => Promise<void>;
   onOpenAttachment?: (a: ChatAttachment) => void;
+  onContinue?: () => Promise<void>;
 }) {
   const isUser = message.role === 'user';
   const attachments = message.attachments ?? [];
@@ -658,6 +815,17 @@ function Bubble({
           {message.toolEvents.map((ev, i) => (
             <ToolChip key={i} event={ev} />
           ))}
+        </div>
+      )}
+      {/* The reply hit the output cap. Its text is kept in full above — this
+          resumes it rather than making him type "Continue" and get the same
+          oversized answer regenerated from scratch. */}
+      {!isUser && message.truncated && onContinue && (
+        <div className="bubble-cut" role="status">
+          <span className="bubble-cut__text">Cut off at the length limit.</span>
+          <button className="bubble-cut__btn" onClick={() => void onContinue()}>
+            Continue
+          </button>
         </div>
       )}
       {failure && onRetry && onDismiss && (

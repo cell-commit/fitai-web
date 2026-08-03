@@ -78,6 +78,12 @@ export interface CoachSendOptions {
   attachments?: ChatAttachment[];
   /** Reuse an existing user-message id (a retry keeps the original turn's id). */
   messageId?: string;
+  /**
+   * This turn resumes a truncated reply. Recorded on the in-flight record so a
+   * resume-retry re-sends it AS a continuation — replaying it as an ordinary
+   * turn would make the model restart the answer it was meant to finish.
+   */
+  continuation?: boolean;
 }
 
 /**
@@ -102,6 +108,7 @@ export async function performCoachSend(
   const messageId = opts.messageId ?? makeMessageId();
   const attachments = opts.attachments ?? [];
   const attachmentIds = attachments.map((a) => a.id);
+  const continuation = opts.continuation === true;
   await saveInflightSend({
     mode,
     text,
@@ -109,9 +116,14 @@ export async function performCoachSend(
     attempts: attempt,
     messageId,
     ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+    ...(continuation ? { continuation: true } : {}),
   });
   try {
-    await sendCoachMessage(mode, text, history, { attachments, messageId });
+    await sendCoachMessage(mode, text, history, {
+      attachments,
+      messageId,
+      ...(continuation ? { continuation: true } : {}),
+    });
     await clearInflightSend();
     return { status: 'ok' };
   } catch (e) {
@@ -197,6 +209,8 @@ export interface RetryOptions {
   messageId?: string;
   /** Ids only — the images themselves are rehydrated from IndexedDB. */
   attachmentIds?: string[];
+  /** Re-send as a continuation (see CoachSendOptions.continuation). */
+  continuation?: boolean;
 }
 
 /**
@@ -215,12 +229,17 @@ export async function retryCoachSend(
 ): Promise<RetryResult> {
   if (running) return { status: 'busy' };
 
-  let { messageId, attachmentIds } = opts;
-  if (messageId === undefined || attachmentIds === undefined) {
+  let { messageId, attachmentIds, continuation } = opts;
+  if (
+    messageId === undefined ||
+    attachmentIds === undefined ||
+    continuation === undefined
+  ) {
     const record = await getInflightSend();
     if (record && record.mode === mode) {
       messageId = messageId ?? record.messageId;
       attachmentIds = attachmentIds ?? record.attachmentIds;
+      continuation = continuation ?? record.continuation;
     }
   }
 
@@ -244,6 +263,7 @@ export async function retryCoachSend(
   return performCoachSend(mode, text, prior, attempt, {
     attachments,
     messageId,
+    ...(continuation ? { continuation: true } : {}),
   });
 }
 
@@ -284,7 +304,11 @@ export async function resumeInflightSend(): Promise<ResumeOutcome> {
     record.mode,
     record.text,
     record.attempts + 1,
-    { messageId: record.messageId, attachmentIds: record.attachmentIds }
+    {
+      messageId: record.messageId,
+      attachmentIds: record.attachmentIds,
+      continuation: record.continuation,
+    }
   );
   return { status: 'retried', mode: record.mode, text: record.text, result };
 }

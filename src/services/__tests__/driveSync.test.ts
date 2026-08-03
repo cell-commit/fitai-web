@@ -198,8 +198,14 @@ describe('not configured', () => {
     expect(status.queueLength).toBe(1);
   });
 
-  it('refreshAll silently no-ops when not configured', async () => {
-    await expect(driveSync.refreshAll()).resolves.toBeUndefined();
+  it('refreshAll no-ops when not configured (and reports no failure)', async () => {
+    // Not-configured is NOT a refresh failure — the pane must not show the
+    // "couldn't reach your training files" state just because sync was never
+    // set up. That state is reserved for a real, attempted-and-failed pull.
+    await expect(driveSync.refreshAll()).resolves.toEqual({
+      ok: true,
+      error: null,
+    });
     expect(mockFetch).not.toHaveBeenCalled();
   });
 });

@@ -28,7 +28,7 @@ import {
   MODELS,
   callClaude,
   runToolLoop,
-  guardStopReason,
+  guardRefusal,
   firstText,
   type ClaudeMessage,
   type ClaudeContentBlock,
@@ -58,6 +58,44 @@ import {
 import { appendChatMessage } from './storage';
 
 const HISTORY_LIMIT = 30;
+
+/**
+ * Output-token cap for both chat modes.
+ *
+ * ⚠️ THINKING TOKENS COME OUT OF THIS SAME BUDGET. Both modes run
+ * `thinking: { type: 'adaptive' }`, and on Opus 4.x the adaptive reasoning is
+ * billed against max_tokens before a single character of the visible reply is
+ * written. The old value here was 4096, which a whole-week plan plus an "open
+ * items" list blew through routinely: the answer truncated, the partial text
+ * was thrown away, and "Continue" just regenerated the same oversized reply.
+ *
+ * 16384 is the ceiling, not a target — the model still stops when it is done.
+ * The model itself allows up to 128K output tokens, but these are NON-STREAMING
+ * fetches behind DEFAULT_REQUEST_TIMEOUT_MS (180s), and ~16K is the largest
+ * budget that reliably finishes inside that window. Going higher means moving
+ * the chat to streaming first.
+ *
+ * DO NOT LOWER THIS to "save tokens": max_tokens is a cap, not a spend, so a
+ * short answer costs exactly the same at 16384 as it did at 4096.
+ */
+const MAX_OUTPUT_TOKENS = 16384;
+
+/**
+ * Appended to a truncated assistant turn when it is replayed as history, so a
+ * later turn reads the abrupt ending as "this was cut off" rather than as the
+ * coach's considered final word (and does not imitate the style).
+ */
+const TRUNCATION_NOTE = '[This reply was cut off by the output limit.]';
+
+/**
+ * Instruction added to the WIRE text of a continuation send. The partial
+ * assistant turn is already in the messages array as history; this tells the
+ * model to resume it. An assistant prefill would be the obvious mechanism, but
+ * Opus 4.x rejects a trailing assistant turn with a 400 — continuation has to
+ * ride on a user turn.
+ */
+const CONTINUE_INSTRUCTION =
+  'Your previous reply was cut off by the output limit. Continue it from exactly where it stopped — pick up mid-sentence if that is where it ended. Do not restart, do not re-summarise what you already wrote, and do not apologise.';
 
 // ─────────────────────────────────────────────────────────────
 // Tool definitions
@@ -259,12 +297,23 @@ function makeHandlers(
  */
 export const REPLAY_ATTACHMENT_TURNS = 0;
 
-/** History rendering for a turn that carried images — text, never the bytes. */
+/**
+ * History rendering for a turn that carried images — text, never the bytes.
+ * A truncated assistant turn is replayed with an explicit note: without it the
+ * model reads a reply that stops mid-sentence as a stylistic choice, and a
+ * later unrelated turn can start imitating the abrupt ending.
+ */
 function historyText(m: ChatMessage): string {
   const n = m.attachments?.length ?? 0;
-  if (n === 0) return m.text;
-  const note = `[${n} photo${n === 1 ? '' : 's'} — not re-sent]`;
-  return m.text ? `${m.text} ${note}` : note;
+  let text = m.text;
+  if (n > 0) {
+    const note = `[${n} photo${n === 1 ? '' : 's'} — not re-sent]`;
+    text = text ? `${text} ${note}` : note;
+  }
+  if (m.role === 'assistant' && m.truncated) {
+    text = text ? `${text}\n\n${TRUNCATION_NOTE}` : TRUNCATION_NOTE;
+  }
+  return text;
 }
 
 /** Map persisted chat history (trimmed to the last 30) to wire messages. */
@@ -313,7 +362,12 @@ export interface SendCoachResult {
   toolEvents: ChatToolEvent[];
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
+  /** True when the reply hit the output cap — its text is partial, not final. */
+  truncated: boolean;
 }
+
+/** The user-visible text of the turn the "Continue" affordance sends. */
+export const CONTINUE_TEXT = 'Continue';
 
 /**
  * Options bag (not extra positional args) so every existing call site and test
@@ -328,6 +382,12 @@ export interface SendCoachOptions {
    * photo-only send has no text to match on.
    */
   messageId?: string;
+  /**
+   * This send resumes a reply that hit the output cap. The partial assistant
+   * turn is already carried in `history`; this appends the resume instruction
+   * to the WIRE text only, so the chat still shows a plain "Continue" bubble.
+   */
+  continuation?: boolean;
 }
 
 /**
@@ -356,16 +416,21 @@ export async function sendCoachMessage(
   // Encode once, here, so a mode branch cannot forget to do it.
   const imageBlocks =
     attachments.length > 0 ? await attachmentsToBlocks(attachments) : [];
-  const text = wireText(userText, imageBlocks.length);
+  const base = wireText(userText, imageBlocks.length);
+  const text = opts.continuation ? `${base}\n\n${CONTINUE_INSTRUCTION}` : base;
 
   let assistantText: string;
+  let truncated: boolean;
   let toolEvents: ChatToolEvent[] = [];
 
   if (mode === 'nutrition') {
-    assistantText = await runNutrition(text, history, imageBlocks);
+    const res = await runNutrition(text, history, imageBlocks);
+    assistantText = res.assistantText;
+    truncated = res.truncated;
   } else {
     const res = await runCoach(text, history, imageBlocks);
     assistantText = res.assistantText;
+    truncated = res.truncated;
     toolEvents = res.toolEvents;
   }
 
@@ -376,10 +441,11 @@ export async function sendCoachMessage(
     text: assistantText,
     toolEvents: toolEvents.length > 0 ? toolEvents : undefined,
     timestamp: Date.now(),
+    ...(truncated ? { truncated: true } : {}),
   };
   await appendChatMessage(assistantMessage);
 
-  return { assistantText, toolEvents, userMessage, assistantMessage };
+  return { assistantText, toolEvents, userMessage, assistantMessage, truncated };
 }
 
 // ── Coach mode ────────────────────────────────────────────────
@@ -388,7 +454,11 @@ async function runCoach(
   userText: string,
   history: ChatMessage[],
   imageBlocks: ClaudeContentBlock[] = []
-): Promise<{ assistantText: string; toolEvents: ChatToolEvent[] }> {
+): Promise<{
+  assistantText: string;
+  toolEvents: ChatToolEvent[];
+  truncated: boolean;
+}> {
   const [systemData, contextData] = await Promise.all([
     loadCoachSystemData(),
     loadCoachContextData(),
@@ -408,21 +478,27 @@ async function runCoach(
       tools: COACH_TOOLS,
       thinking: { type: 'adaptive' },
       output_config: { effort: 'medium' },
-      maxTokens: 4096,
+      // Thinking tokens share this budget — see MAX_OUTPUT_TOKENS.
+      maxTokens: MAX_OUTPUT_TOKENS,
     },
     makeHandlers(events, userText)
   );
 
+  // NEVER discard a partial answer. On truncation the generated text is kept
+  // exactly as written and the turn is FLAGGED instead; the pane renders it with
+  // a Continue button. The fallback line below is only for the genuinely-empty
+  // case (the response ended on a thinking or tool_use block with no text at
+  // all) — replacing real content with an apology is what caused the loop.
   let assistantText = firstText(result.response);
-  if (result.truncated && !assistantText) {
-    assistantText =
-      'I ran out of room finishing that — could you nudge me to continue?';
-  }
   if (!assistantText && events.length > 0) {
     // Tools ran but the model returned no closing text (rare) — synthesize one.
     assistantText = events.map((e) => e.summary).join(' · ');
   }
-  return { assistantText, toolEvents: events };
+  if (!assistantText && result.truncated) {
+    assistantText =
+      'I ran out of room before writing anything — tap Continue and I’ll pick it up.';
+  }
+  return { assistantText, toolEvents: events, truncated: result.truncated };
 }
 
 // ── Nutrition mode ────────────────────────────────────────────
@@ -431,7 +507,7 @@ async function runNutrition(
   userText: string,
   history: ChatMessage[],
   imageBlocks: ClaudeContentBlock[] = []
-): Promise<string> {
+): Promise<{ assistantText: string; truncated: boolean }> {
   const data = await loadNutritionSystemData();
   const system = buildNutritionSystem(data);
 
@@ -444,8 +520,18 @@ async function runNutrition(
     messages,
     thinking: { type: 'adaptive' },
     output_config: { effort: 'medium' },
-    maxTokens: 4096,
+    // Thinking tokens share this budget — see MAX_OUTPUT_TOKENS.
+    maxTokens: MAX_OUTPUT_TOKENS,
   });
-  guardStopReason(response);
-  return firstText(response);
+  // guardRefusal, NOT guardStopReason: a refusal is a hard error, but hitting
+  // the token cap must not throw away the food advice already written. Same
+  // keep-the-partial treatment as coach mode.
+  guardRefusal(response);
+  const truncated = response.stop_reason === 'max_tokens';
+  let assistantText = firstText(response);
+  if (!assistantText && truncated) {
+    assistantText =
+      'I ran out of room before writing anything — tap Continue and I’ll pick it up.';
+  }
+  return { assistantText, truncated };
 }

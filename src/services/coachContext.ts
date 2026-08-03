@@ -25,6 +25,7 @@ import type {
 } from '../types';
 import type { SystemBlock } from './claude';
 import {
+  DRIVE_FILES,
   getCached,
   isConfigured,
   refreshAll,
@@ -60,6 +61,31 @@ export interface CoachSystemData {
   trainingStatus: string | null;
   /** Whether Drive sync is configured (affects the "no files" wording). */
   configured: boolean;
+  /**
+   * Calendar date (YYYY-MM-DD) the status file was last pulled from Drive, or
+   * null if it has never been fetched. A DATE, not an age in ms, deliberately:
+   * this block is prompt-cached, so it must stay byte-stable across the turns of
+   * one conversation. A live age would change every message and thrash the cache.
+   */
+  statusFetchedOn?: string | null;
+  /** True when that copy is older than STALE_STATUS_MS (a day). */
+  statusStale?: boolean;
+  /** True when the most recent refresh attempt FAILED (cache is a fallback). */
+  refreshFailed?: boolean;
+}
+
+/** Past this, a cached training-status copy is old enough to warn the model. */
+export const STALE_STATUS_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The honesty clause. Jason edits these files from other surfaces, so the app's
+ * copy can be stale or missing — and the failure mode that actually bit him was
+ * the coach answering confidently from an empty/stale copy without ever saying
+ * so, which sent him off to paste his week in by hand. Whenever the files are
+ * not known-current, the model is told to lead with that.
+ */
+function disclosureLine(what: string): string {
+  return `\n\nIMPORTANT — DISCLOSE THIS: ${what} Say so in the FIRST line of your reply, before any coaching, and keep it to one short sentence. Do not imply you have read his latest records, do not present remembered or inferred details as if they came from his files, and if the answer depends on current data, ask him for it or tell him to tap Refresh. Never quietly answer as though the files were up to date.`;
 }
 
 /**
@@ -77,13 +103,33 @@ export function buildCoachSystem(data: CoachSystemData): SystemBlock[] {
 
   let block1: string;
   if (data.trainingStatus?.trim()) {
-    block1 = `Jason's current training status (canonical snapshot of training-status.md):\n\n${data.trainingStatus.trim()}`;
+    const on = data.statusFetchedOn ? ` (last pulled ${data.statusFetchedOn})` : '';
+    block1 = `Jason's current training status (snapshot of training-status.md${on}):\n\n${data.trainingStatus.trim()}`;
+    if (data.refreshFailed) {
+      block1 += disclosureLine(
+        `the app could NOT reach Jason's training files just now, so the snapshot above is an OLD CACHED COPY${
+          data.statusFetchedOn ? ` from ${data.statusFetchedOn}` : ''
+        } and may be out of date.`
+      );
+    } else if (data.statusStale) {
+      block1 += disclosureLine(
+        `the snapshot above was last pulled${
+          data.statusFetchedOn ? ` on ${data.statusFetchedOn}` : ' over a day ago'
+        } and has NOT been refreshed since, so it may not reflect what Jason has changed since then.`
+      );
+    }
   } else if (data.configured) {
     block1 =
-      'No training-status.md content is cached yet — it may still be syncing. Coach from the recent-sessions context below and general best practice, and note that the status file is unavailable if Jason asks about it.';
+      'No training-status.md content is cached yet — it may still be syncing.';
+    block1 += disclosureLine(
+      'you do NOT have Jason’s training-status file at all. You are coaching WITHOUT his canonical records.'
+    );
   } else {
     block1 =
       'No training files are connected. You are operating without Jason’s canonical files: give sensible general coaching, and suggest he connect Drive sync in Settings so you can work from his real status and history.';
+    block1 += disclosureLine(
+      'no training files are connected to this app, so you have none of Jason’s canonical records.'
+    );
   }
 
   return [
@@ -218,10 +264,14 @@ export async function loadCoachSystemData(): Promise<CoachSystemData> {
     getCached('training-status.md'),
     isConfigured(),
   ]);
+  const fetchedAt = status?.fetchedAt ?? null;
   return {
     claudeRules: claude?.content ?? null,
     trainingStatus: status?.content ?? null,
     configured,
+    statusFetchedOn: fetchedAt ? isoDate(fetchedAt) : null,
+    statusStale: fetchedAt !== null && Date.now() - fetchedAt > STALE_STATUS_MS,
+    refreshFailed: lastRefreshFailed,
   };
 }
 
@@ -256,6 +306,18 @@ export async function loadNutritionSystemData(): Promise<NutritionSystemData> {
 export interface CoachContextStatus {
   configured: boolean;
   hasStatusFile: boolean;
+  /**
+   * Age of the cached training-status copy in ms, or null if never fetched.
+   * The UI states the age out loud — "connected" alone hid the fact that the
+   * copy in use could be hours or days old.
+   */
+  ageMs: number | null;
+  /**
+   * Message from the most recent FAILED refresh, or null. A failed refresh MUST
+   * NOT look identical to a successful one: this is the state where the app is
+   * still answering, but from a fallback copy it could not verify.
+   */
+  error: string | null;
 }
 
 export async function getCoachContextStatus(): Promise<CoachContextStatus> {
@@ -263,14 +325,111 @@ export async function getCoachContextStatus(): Promise<CoachContextStatus> {
     isConfigured(),
     getCached('training-status.md'),
   ]);
-  return { configured, hasStatusFile: !!status?.content?.trim() };
+  return {
+    configured,
+    hasStatusFile: !!status?.content?.trim(),
+    ageMs: status ? Date.now() - status.fetchedAt : null,
+    error: lastRefreshError,
+  };
+}
+
+/**
+ * How old the Drive cache may get before the Coach pane quietly re-pulls it.
+ *
+ * Jason edits the same three files from Claude Code on his Mac, so a cache from
+ * earlier in the day is silently WRONG, not merely stale. Two minutes is short
+ * enough that a pane he opens after switching surfaces sees his latest edits,
+ * and long enough that flipping between tabs mid-conversation does not re-fetch
+ * on every visibility change (which would churn the prompt cache).
+ */
+export const COACH_CONTEXT_MAX_AGE_MS = 2 * 60 * 1000;
+
+/**
+ * True when the Drive cache is old enough to be worth a background refresh —
+ * or when a file is missing entirely (first run, or a fetch that failed).
+ * Always false when sync is not configured: there is nothing to be stale about.
+ */
+export async function isCoachContextStale(now = Date.now()): Promise<boolean> {
+  if (!(await isConfigured())) return false;
+  const entries = await Promise.all(DRIVE_FILES.map((f) => getCached(f)));
+  return entries.some((e) => !e || now - e.fetchedAt > COACH_CONTEXT_MAX_AGE_MS);
+}
+
+export interface RefreshCoachContextResult {
+  /** False when the pull failed — the cache is a fallback, not a fresh copy. */
+  ok: boolean;
+  /** Failure message when `ok` is false, else null. */
+  error: string | null;
+  /**
+   * True when at least one file's CONTENT actually changed. Lets the pane say
+   * "Training files updated" only when it really picked something up, instead
+   * of claiming a change on every refresh.
+   */
+  changed: boolean;
+}
+
+/**
+ * Outcome of the last refresh attempt, so BOTH the status line and the system
+ * prompt can tell "working from current files" from "working from a copy we
+ * could not verify". Module-level rather than persisted: the pane refreshes on
+ * mount, so every session re-establishes it before the first send, and a stale
+ * failure flag from a previous session would be its own kind of lie.
+ */
+let lastRefreshError: string | null = null;
+let lastRefreshFailed = false;
+
+/** Test-only reset of the module-level refresh-outcome flags. */
+export function resetCoachContextStateForTests(): void {
+  lastRefreshError = null;
+  lastRefreshFailed = false;
+}
+
+/** Content of each cached Drive file, for a before/after comparison. */
+async function contentSnapshot(): Promise<Array<string | null>> {
+  const entries = await Promise.all(DRIVE_FILES.map((f) => getCached(f)));
+  return entries.map((e) => e?.content ?? null);
+}
+
+/** YYYY-MM-DD in local time, for a byte-stable "last pulled" in the prompt. */
+function isoDate(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /**
  * Pull the latest Drive files into the cache when sync is configured. Called by
- * the Coach pane on mount and from its "refresh context" affordance — NOT per
- * message, so system bytes stay stable within a session (design §2.3).
+ * the Coach pane on mount, on returning to the foreground with a stale cache,
+ * and from its "refresh context" affordance — NOT per message, so system bytes
+ * stay stable within a session (design §2.3). The caller is responsible for not
+ * invoking this while a send is in flight.
+ *
+ * NOTHING here fails silently. A rejected fetch, a thrown bridge error, even a
+ * malformed response is captured, returned, and recorded for the status line and
+ * the system prompt. Swallowing it is what let the coach answer confidently from
+ * files it never actually read.
  */
-export async function refreshCoachContext(): Promise<void> {
-  if (await isConfigured()) await refreshAll();
+export async function refreshCoachContext(): Promise<RefreshCoachContextResult> {
+  if (!(await isConfigured())) {
+    lastRefreshError = null;
+    lastRefreshFailed = false;
+    return { ok: true, error: null, changed: false };
+  }
+
+  let before: Array<string | null> = [];
+  try {
+    before = await contentSnapshot();
+    const result = await refreshAll();
+    const after = await contentSnapshot();
+    const changed = after.some((content, i) => content !== before[i]);
+    lastRefreshError = result.ok ? null : (result.error ?? 'Refresh failed.');
+    lastRefreshFailed = !result.ok;
+    return { ok: result.ok, error: lastRefreshError, changed };
+  } catch (e) {
+    // refreshAll is meant to be tolerant, but a bad bridge response or a thrown
+    // storage error must still surface rather than read as a clean refresh.
+    lastRefreshError = e instanceof Error ? e.message : String(e);
+    lastRefreshFailed = true;
+    return { ok: false, error: lastRefreshError, changed: false };
+  }
 }

@@ -246,23 +246,37 @@ export async function fetchFile(name: DriveFileName): Promise<CachedFile> {
   return cached;
 }
 
+export interface RefreshAllResult {
+  /** False when at least one file failed to fetch — the cache is now stale. */
+  ok: boolean;
+  /** First failure's message, or null. */
+  error: string | null;
+}
+
 /**
  * Pull all three files. Tolerant of individual failures — a single file that
- * errors doesn't abort the others. Silently no-ops when sync isn't configured
- * (so foreground-refresh hooks can call it unconditionally).
+ * errors doesn't abort the others. No-ops when sync isn't configured (so
+ * foreground-refresh hooks can call it unconditionally).
+ *
+ * The outcome is RETURNED as well as recorded in meta: a failed refresh leaves
+ * the previous cached copy in place, and a caller that cannot tell "refreshed"
+ * from "tried and failed" will show a stale copy as if it were current. That is
+ * exactly the bug this return value exists to prevent — do not go back to
+ * swallowing it.
  */
-export async function refreshAll(): Promise<void> {
-  if (!(await isConfigured())) return;
+export async function refreshAll(): Promise<RefreshAllResult> {
+  if (!(await isConfigured())) return { ok: true, error: null };
   const results = await Promise.allSettled(DRIVE_FILES.map((f) => fetchFile(f)));
   const firstError = results.find(
     (r): r is PromiseRejectedResult => r.status === 'rejected'
   );
   if (firstError) {
     const reason = firstError.reason;
-    await patchMeta({
-      lastError: reason instanceof Error ? reason.message : String(reason),
-    });
+    const error = reason instanceof Error ? reason.message : String(reason);
+    await patchMeta({ lastError: error });
+    return { ok: false, error };
   }
+  return { ok: true, error: null };
 }
 
 // ─────────────────────────────────────────────────────────────

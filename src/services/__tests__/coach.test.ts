@@ -104,6 +104,17 @@ function toolUseResponse(
   };
 }
 
+/** A reply that hit the output cap mid-sentence — partial text, max_tokens. */
+function truncatedResponse(text: string): ClaudeResponse {
+  return {
+    id: 'msg',
+    model: 'claude-opus-4-8',
+    content: text ? [{ type: 'text', text }] : [],
+    stop_reason: 'max_tokens',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  };
+}
+
 function fetchReturning(obj: ClaudeResponse) {
   return {
     ok: true,
@@ -333,6 +344,132 @@ describe('nutrition mode', () => {
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.tools).toBeUndefined();
     expect(body.system[0].text).toContain('2000 kcal');
+  });
+});
+
+// ── truncation + continuation ─────────────────────────────────
+
+describe('truncated replies', () => {
+  it('gives thinking room: max_tokens is well above the old 4096', async () => {
+    // Regression guard. Thinking tokens are drawn from max_tokens, so 4096 was
+    // exhausted by the reasoning before a long plan could be written.
+    mockFetch.mockResolvedValueOnce(fetchReturning(textResponse('ok')));
+    await sendCoachMessage('coach', 'plan my week', []);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.max_tokens).toBe(16384);
+    expect(body.thinking).toEqual({ type: 'adaptive' });
+  });
+
+  it('KEEPS the partial text and flags the turn instead of discarding it', async () => {
+    const partial = 'Monday — Push:\n- Bench 4x6\n- Incline DB press 3x10\n- Cable fly';
+    mockFetch.mockResolvedValueOnce(fetchReturning(truncatedResponse(partial)));
+
+    const res = await sendCoachMessage('coach', 'plan my week', []);
+
+    // The old behaviour replaced all of this with an apology string.
+    expect(res.assistantText).toBe(partial);
+    expect(res.truncated).toBe(true);
+    expect(res.assistantMessage.truncated).toBe(true);
+    expect(res.assistantText).not.toMatch(/ran out of room/i);
+
+    const thread = await getChatMessages('coach');
+    expect(thread[1].text).toBe(partial);
+    expect(thread[1].truncated).toBe(true);
+  });
+
+  it('only falls back to an explanatory line when there is genuinely no text', async () => {
+    // Truncated on a thinking/tool_use block — nothing was written at all.
+    mockFetch.mockResolvedValueOnce(fetchReturning(truncatedResponse('')));
+
+    const res = await sendCoachMessage('coach', 'plan my week', []);
+
+    expect(res.truncated).toBe(true);
+    expect(res.assistantText).toMatch(/ran out of room/i);
+  });
+
+  it('a normal reply is NOT flagged truncated', async () => {
+    mockFetch.mockResolvedValueOnce(fetchReturning(textResponse('All set.')));
+
+    const res = await sendCoachMessage('coach', 'hi', []);
+
+    expect(res.truncated).toBe(false);
+    expect(res.assistantMessage.truncated).toBeUndefined();
+    expect((await getChatMessages('coach'))[1].truncated).toBeUndefined();
+  });
+
+  it('a continuation send carries the partial assistant turn and asks it to resume', async () => {
+    const partial = 'Monday — Push:\n- Bench 4x6\n- Incline DB press 3x10';
+    const history: ChatMessage[] = [
+      { id: 'u1', mode: 'coach', role: 'user', text: 'plan my week', timestamp: 1 },
+      {
+        id: 'a1',
+        mode: 'coach',
+        role: 'assistant',
+        text: partial,
+        timestamp: 2,
+        truncated: true,
+      },
+    ];
+    mockFetch.mockResolvedValueOnce(fetchReturning(textResponse('- Cable fly 3x12')));
+
+    await sendCoachMessage('coach', 'Continue', history, { continuation: true });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const assistantTurn = body.messages[1];
+
+    // The partial reply is replayed verbatim, so the model resumes it rather
+    // than regenerating the same oversized answer from scratch.
+    expect(assistantTurn.role).toBe('assistant');
+    expect(assistantTurn.content).toContain(partial);
+    // …and is marked as cut off, so its abrupt ending is not read as a choice.
+    expect(assistantTurn.content).toMatch(/cut off by the output limit/i);
+
+    // Continuation rides on the USER turn: a trailing assistant turn would be
+    // an assistant prefill, which Opus 4.x rejects with a 400.
+    const last = body.messages[body.messages.length - 1];
+    expect(last.role).toBe('user');
+    expect(String(last.content)).toMatch(/continue it from exactly where it stopped/i);
+  });
+
+  it('an ordinary follow-up does NOT get the resume instruction', async () => {
+    mockFetch.mockResolvedValueOnce(fetchReturning(textResponse('Sure.')));
+
+    await sendCoachMessage('coach', 'and my deadlift?', []);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const last = body.messages[body.messages.length - 1];
+    expect(String(last.content)).not.toMatch(/continue it from exactly where/i);
+  });
+
+  it('nutrition truncation keeps the partial answer instead of throwing', async () => {
+    const partial = 'Greek yoghurt (20g), a scoop of whey (25g), and';
+    mockFetch.mockResolvedValueOnce(fetchReturning(truncatedResponse(partial)));
+
+    // Previously guardStopReason threw here, surfacing a red banner and losing
+    // the reply entirely.
+    const res = await sendCoachMessage('nutrition', 'how do I hit 150g?', []);
+
+    expect(res.assistantText).toBe(partial);
+    expect(res.truncated).toBe(true);
+    expect((await getChatMessages('nutrition'))[1].truncated).toBe(true);
+  });
+
+  it('nutrition still throws on a refusal', async () => {
+    mockFetch.mockResolvedValueOnce(
+      fetchReturning({
+        id: 'msg',
+        model: 'claude-opus-4-8',
+        content: [],
+        stop_reason: 'refusal',
+        stop_details: { explanation: 'Declined.' },
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+    );
+
+    await expect(sendCoachMessage('nutrition', 'anything', [])).rejects.toThrow(
+      /declined/i
+    );
   });
 });
 

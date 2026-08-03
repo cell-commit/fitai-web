@@ -22,13 +22,23 @@ vi.mock('../../services/blobStore', () => ({
   list: vi.fn(async () => Array.from(blobs.map.keys())),
 }));
 
-vi.mock('../../services/coach', () => ({ sendCoachMessage: vi.fn() }));
+vi.mock('../../services/coach', () => ({
+  sendCoachMessage: vi.fn(),
+  CONTINUE_TEXT: 'Continue',
+}));
 vi.mock('../../services/coachContext', () => ({
-  refreshCoachContext: vi.fn(async () => {}),
+  refreshCoachContext: vi.fn(async () => ({
+    ok: true,
+    error: null,
+    changed: false,
+  })),
   getCoachContextStatus: vi.fn(async () => ({
     configured: true,
     hasStatusFile: true,
+    ageMs: 1000,
+    error: null,
   })),
+  isCoachContextStale: vi.fn(async () => false),
 }));
 
 const { sendCoachMessage } = await import('../../services/coach');

@@ -407,6 +407,12 @@ export interface InflightCoachSend {
    * that, with the text comparison kept as a fallback for legacy records.
    */
   messageId?: string;
+  /**
+   * This send resumes a reply that hit the output cap. Kept on the record so a
+   * resume-retry re-sends it as a continuation instead of an ordinary turn
+   * (which would make the model restart the answer). Absent on legacy records.
+   */
+  continuation?: boolean;
 }
 
 export async function getInflightSend(): Promise<InflightCoachSend | null> {
