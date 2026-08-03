@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
-import { REPLAY_ATTACHMENT_TURNS, sendCoachMessage } from '../coach';
+import { COACH_TOOLS, REPLAY_ATTACHMENT_TURNS, sendCoachMessage } from '../coach';
 import {
   saveSettings,
   saveWeeklyProgram,
@@ -324,6 +324,47 @@ describe('update_weekly_program', () => {
       (b) => b.type === 'tool_result'
     );
     expect(String(toolResult?.content)).toMatch(/awaiting Jason's approval/i);
+  });
+});
+
+// ── update_weekly_program: when NOT to call it ────────────────
+//
+// Jason asked a question about what the coach could see and got a whole staged
+// week back. The staging/approval gate is fine; filling his Week tab with a
+// proposal he never requested is not.
+
+describe('update_weekly_program tool description — unrequested changes', () => {
+  const description = () =>
+    COACH_TOOLS.find((t) => t.name === 'update_weekly_program')!.description;
+
+  it('scopes the tool to changes Jason asked for or accepted', () => {
+    const d = description();
+    expect(d).toMatch(/WHEN TO CALL/);
+    expect(d).toMatch(/only when Jason has ASKED for a plan or a change/i);
+    expect(d).toMatch(/clearly accepted a proposal/i);
+  });
+
+  it('forbids answering a question with a staged week', () => {
+    const d = description();
+    expect(d).toMatch(/Do NOT stage a change he did not ask for/i);
+    expect(d).toMatch(/question about what you can see/i);
+    expect(d).toMatch(/answered in words, never with a staged week/i);
+  });
+
+  it('forbids pre-empting an open decision that departs from his expectation', () => {
+    const d = description();
+    expect(d).toMatch(/pre-empt a decision that contradicts what he said he expects/i);
+    expect(d).toMatch(/holding back a reintroduction/i);
+    expect(d).toMatch(/offer to build the week instead/i);
+  });
+
+  it('keeps the existing copy and variety constraints', () => {
+    // Regression guard: the new clause must not have displaced them.
+    const d = description();
+    expect(d).toMatch(/VARIETY/);
+    expect(d).toMatch(/4 words/);
+    expect(d).toMatch(/30 words/);
+    expect(d).toMatch(/12 words/);
   });
 });
 

@@ -152,6 +152,97 @@ describe('buildCoachSystem', () => {
   });
 });
 
+// ── Conversational rules in the persona block ─────────────────
+//
+// The bug these cover: Jason asked "can you see the latest training updates
+// from last week now?" and the coach never answered — it opened with "Staged in
+// your Week tab", shipped a whole week he had not asked for, and buried the
+// decision to withhold his expected chest-work reintroduction as bullet four of
+// a plan presented as settled.
+
+describe('buildCoachSystem — conversational rules', () => {
+  const persona = () => buildCoachSystem(SYSTEM_DATA)[0].text;
+
+  it('tells the model to ANSWER the question in the first line', () => {
+    const text = persona();
+    expect(text).toMatch(/ANSWER FIRST/);
+    expect(text).toMatch(/first line of your reply answers what Jason actually asked/i);
+    expect(text).toMatch(/yes\/no question, the first word is Yes or No/i);
+    // The exact failure: opening with the outcome of a tool call.
+    expect(text).toMatch(/Never open a reply with the outcome of a tool call/i);
+    expect(text).toMatch(/Staged in your Week tab/);
+  });
+
+  it('tells the model to state concretely what it can see when asked', () => {
+    const text = persona();
+    expect(text).toMatch(/SAY WHAT YOU CAN SEE/);
+    expect(text).toMatch(/date the training-status snapshot was last pulled/i);
+    expect(text).toMatch(/most recent session/i);
+    expect(text).toMatch(/Never leave it to be inferred/i);
+    // Positive counterpart to the DISCLOSE clause — on request, not boilerplate.
+    expect(text).toMatch(/only when he asks/i);
+    expect(text).toMatch(/not a preamble on every reply/i);
+  });
+
+  it('separates routine calls (make them) from departures (ask)', () => {
+    const text = persona();
+    expect(text).toMatch(/CONFIRM BEFORE YOU DEPART/);
+    // Routine programming stays decisive — this must not make the coach timid.
+    expect(text).toMatch(/Routine programming is yours to decide/i);
+    expect(text).toMatch(/do not ask permission and do not hedge/i);
+    // The narrow exception.
+    expect(text).toMatch(/CONTRADICTS something Jason has said he wants or expects/);
+    expect(text).toMatch(/rehab or return-to-training plan/i);
+    expect(text).toMatch(/withholding a reintroduction he was expecting/i);
+    expect(text).toMatch(/then ask him/i);
+    expect(text).toMatch(/One short question/);
+    expect(text).toMatch(/not a survey/i);
+  });
+
+  it('does not undercut "lead, don’t follow" — it says so explicitly', () => {
+    expect(persona()).toMatch(/does not soften "lead, don't follow"/i);
+  });
+
+  it('forbids answering a question with a staged week', () => {
+    const text = persona();
+    expect(text).toMatch(/DO NOT STAGE A PROGRAM CHANGE JASON DID NOT ASK FOR/);
+    expect(text).toMatch(/clearly accepted a proposal/i);
+    expect(text).toMatch(/Do not answer it with a staged week/i);
+    expect(text).toMatch(/offer to build it/i);
+  });
+
+  it('keeps the persona block byte-stable (no per-message content)', () => {
+    // The new rules are constants, so nothing about them can vary per turn.
+    expect(persona()).toBe(persona());
+    expect(JSON.stringify(buildCoachSystem(SYSTEM_DATA))).toBe(
+      JSON.stringify(buildCoachSystem(SYSTEM_DATA))
+    );
+    // No date, time, or elapsed-age leaks into the cached prefix.
+    expect(persona()).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
+
+  it('still carries the rules and the tool policy alongside them', () => {
+    const text = persona();
+    expect(text).toContain('RULE ONE: lead, do not follow.');
+    expect(text).toContain('Tool-usage policy');
+    // Ordering: his rules, then how to reply, then what to call.
+    expect(text.indexOf('RULE ONE')).toBeLessThan(text.indexOf('ANSWER FIRST'));
+    expect(text.indexOf('ANSWER FIRST')).toBeLessThan(
+      text.indexOf('Tool-usage policy')
+    );
+  });
+
+  it('survives the fallback rules path too', () => {
+    const [block0] = buildCoachSystem({
+      claudeRules: null,
+      trainingStatus: null,
+      configured: false,
+    });
+    expect(block0.text).toMatch(/ANSWER FIRST/);
+    expect(block0.text).toMatch(/CONFIRM BEFORE YOU DEPART/);
+  });
+});
+
 // ── buildContextBlock ─────────────────────────────────────────
 
 describe('buildContextBlock', () => {
