@@ -26,7 +26,6 @@ import {
   formatPlannedDay,
   previousLine,
   doneSetCount,
-  isSetDone,
   hasLoggedSet,
   placeholderForSet,
   fillWeightForward,
@@ -39,6 +38,8 @@ import { Markdown } from './Markdown';
 import { ClampText } from './ClampText';
 import { RestTimer } from './RestTimer';
 import { SessionTimer } from './SessionTimer';
+import { SessionIndex } from './SessionIndex';
+import { ExercisePage, type CoachTips } from './ExercisePage';
 import { acquireWakeLock, type WakeLockHandle } from '../utils/wakeLock';
 import { primeAudio } from '../utils/sound';
 
@@ -118,22 +119,15 @@ function nextActiveSet(
 }
 
 /**
- * Should advancing the active set also move keyboard focus into its weight box?
+ * How long the "exercise complete" beat sits on screen before the exercise page
+ * hands him back to the index.
  *
- * Only on a fine pointer (i.e. a desktop browser, where focus costs nothing).
- * On the phone this is deliberately OFF: focusing a number input inside the ✓
- * tap gesture pops the iOS keyboard over the bottom half of the screen after
- * EVERY set — covering the rest pop-out and the row he just highlighted — and
- * he then has to dismiss it to see anything. The highlight plus the smooth
- * scroll carry the same "you're here now" message without hijacking the screen,
- * and one tap on the highlighted box still opens the keyboard when he wants it.
+ * Long enough to read, and to change his mind — one tap on "+ Add set", the
+ * comment box or the ✓ he just pressed cancels the return outright. Short
+ * enough that finishing an exercise and walking to the next machine is one
+ * gesture, not two. It is never allowed to yank the screen away mid-typing.
  */
-function shouldFocusNextSet(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-    return false;
-  }
-  return !window.matchMedia('(pointer: coarse)').matches;
-}
+export const AUTO_RETURN_MS = 1300;
 
 /**
  * How long after a rest ended we still restore it on reload. A draft resumed the
@@ -228,6 +222,15 @@ export function SessionRunner({
     granted: false,
   });
   /**
+   * Which exercise page is open, or null for the index. Session navigation —
+   * NOT part of the draft: a resumed session opens on the index, which is the
+   * honest answer to "where am I?" after a reload.
+   */
+  const [openEx, setOpenEx] = useState<number | null>(null);
+  /** The exercise showing the "complete" beat before the auto-return, or null. */
+  const [completing, setCompleting] = useState<number | null>(null);
+  const returnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
    * Set indices whose weight he typed himself, per exercise index — fill-forward
    * must not stomp them. Ephemeral on purpose: after a reload we cannot tell a
    * hand-typed weight from a filled one, and silently remembering a stale "don't
@@ -250,9 +253,14 @@ export function SessionRunner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [programDay.date]);
 
+  // Never let a scheduled auto-return outlive the screen it was scheduled on.
+  useEffect(() => cancelAutoReturn, []);
+
   async function load() {
     hydrated.current = false;
     editedWeights.current = new Map();
+    cancelAutoReturn();
+    setOpenEx(null);
     if (showReadiness) setCheckIn(await getCheckIn(today));
 
     const stored = await getSettings();
@@ -385,6 +393,42 @@ export function SessionRunner({
     watchNudgeDismissed,
   ]);
 
+  // ── Exercise navigation + the auto-return ──────────────────
+
+  /**
+   * Stop a pending auto-return. Called from EVERY interaction on the exercise
+   * page (a tap, a keypress) — the rule is that the screen may only move on its
+   * own while he is doing nothing, so touching anything keeps him where he is.
+   */
+  function cancelAutoReturn() {
+    if (returnTimer.current !== null) {
+      clearTimeout(returnTimer.current);
+      returnTimer.current = null;
+    }
+    setCompleting(null);
+  }
+
+  /** Show the "exercise complete" beat, then hand him back to the index. */
+  function scheduleAutoReturn(exIdx: number) {
+    cancelAutoReturn();
+    setCompleting(exIdx);
+    returnTimer.current = setTimeout(() => {
+      returnTimer.current = null;
+      setCompleting(null);
+      setOpenEx(null);
+    }, AUTO_RETURN_MS);
+  }
+
+  function openExercise(exIdx: number) {
+    cancelAutoReturn();
+    setOpenEx(exIdx);
+  }
+
+  function backToIndex() {
+    cancelAutoReturn();
+    setOpenEx(null);
+  }
+
   // ── Set mutations ──────────────────────────────────────────
 
   /** Replace one exercise; returns the same array when `fn` changed nothing, so
@@ -460,6 +504,7 @@ export function SessionRunner({
     const set = ex?.sets[setIdx];
     if (!set) return;
     void primeAudio();
+    cancelAutoReturn();
 
     if (set.done) {
       // Un-commit: keep the numbers, drop the ✓, stop the rest. The highlight
@@ -505,6 +550,13 @@ export function SessionRunner({
     );
 
     startRest();
+
+    // That was the last uncommitted set of this exercise: show the "complete"
+    // beat and take him back to the index. Only while he is actually looking at
+    // this exercise's page — nothing navigates behind his back.
+    if (openEx === exIdx && firstUncommitted(after[exIdx].sets) === null) {
+      scheduleAutoReturn(exIdx);
+    }
   }
 
   // ── Rest timer ─────────────────────────────────────────────
@@ -535,6 +587,7 @@ export function SessionRunner({
   }
 
   function addSet(exIdx: number) {
+    cancelAutoReturn();
     setExercises((prev) =>
       prev.map((ex, i) => {
         if (i !== exIdx) return ex;
@@ -545,6 +598,7 @@ export function SessionRunner({
   }
 
   function removeSet(exIdx: number, setIdx: number) {
+    cancelAutoReturn();
     setExercises((prev) =>
       prev.map((ex, i) => {
         if (i !== exIdx) return ex;
@@ -552,6 +606,19 @@ export function SessionRunner({
         return { ...ex, sets: ex.sets.filter((_, j) => j !== setIdx) };
       })
     );
+  }
+
+  /**
+   * His comment on one exercise ("was easy — up the weight next time").
+   *
+   * Written into the working exercise, which is what the existing draft-persist
+   * effect saves — same rhythm as typing reps or a weight, so the comment costs
+   * no extra localStorage writes of its own. From there it rides into the
+   * SessionLog, the Drive history entry and the coach's context.
+   */
+  function setNote(exIdx: number, note: string) {
+    cancelAutoReturn();
+    updateExercise(exIdx, (ex) => (ex.note === note ? ex : { ...ex, note }));
   }
 
   // ── Readiness ──────────────────────────────────────────────
@@ -579,7 +646,12 @@ export function SessionRunner({
       id: `${today}-${startedAt}`,
       date: today,
       focus: programDay.focus,
-      exercises,
+      // Per-exercise comments come along as typed, trimmed — and a box he
+      // opened and left blank must not log as an empty note.
+      exercises: exercises.map((ex) => ({
+        ...ex,
+        note: ex.note?.trim() ? ex.note.trim() : undefined,
+      })),
       startedAt,
       completedAt: Date.now(),
       feedback: feedback.trim() || undefined,
@@ -605,6 +677,20 @@ export function SessionRunner({
     (n, ex) => n + (doneSetCount(ex.sets) > 0 ? 1 : 0),
     0
   );
+
+  /**
+   * What the coach prescribed for this movement (tempo + cue), matched back to
+   * the program day by slug/name rather than by index — a resumed draft can
+   * carry sets he added, and it must never show another exercise's cues.
+   * Returns undefined when the coach said nothing, so the block disappears.
+   */
+  function tipsFor(ex: LoggedExercise): CoachTips | undefined {
+    const pe = programDay.exercises.find((p) =>
+      ex.slug && p.slug ? p.slug === ex.slug : p.name === ex.name
+    );
+    if (!pe?.tempo?.trim() && !pe?.notes?.trim()) return undefined;
+    return { tempo: pe.tempo, notes: pe.notes };
+  }
 
   // ── Render ─────────────────────────────────────────────────
 
@@ -666,86 +752,104 @@ export function SessionRunner({
     );
   }
 
-  // phase === 'session'
+  // phase === 'session' — an INDEX of the day's exercises, and one page per
+  // exercise. Both are rendered from ONE return with the rest timer mounted
+  // above them, so a running rest survives every move between the two.
+  const openIdx = openEx !== null && exercises[openEx] ? openEx : null;
+
   return (
     <>
       <div className="pane pane--session">
-        {header}
-
-        {showWatchNudge && (
-          <div className="watch-bar">
-            <span className="watch-bar__text">⌚️ Start on your Watch</span>
-            <span className="watch-bar__actions">
-              <button
-                className="watch-bar__btn"
-                onClick={() => dismissWatchNudge(false)}
-              >
-                Started
-              </button>
-              <button
-                className="watch-bar__btn watch-bar__btn--quiet"
-                onClick={() => dismissWatchNudge(true)}
-                aria-label="Don’t remind me about the Watch"
-              >
-                Never
-              </button>
-            </span>
-          </div>
-        )}
-
-        <div className="session-status">
-          <SessionTimer
-            startedAt={startedAt}
-            onRestart={() => setStartedAt(Date.now())}
+        {openIdx !== null ? (
+          <ExercisePage
+            ex={exercises[openIdx]}
+            previous={previous[openIdx] ?? null}
+            tips={tipsFor(exercises[openIdx])}
+            index={openIdx}
+            total={exercises.length}
+            activeSet={active?.ex === openIdx ? active.set : null}
+            advanceToken={active?.ex === openIdx ? active.token : 0}
+            completing={completing === openIdx}
+            onBack={backToIndex}
+            onUpdateSet={(setIdx, patch) => {
+              if (patch.weightKg !== undefined) markWeightEdited(openIdx, setIdx);
+              updateSet(openIdx, setIdx, patch);
+            }}
+            onCommitSet={(setIdx) => commitSet(openIdx, setIdx)}
+            onFillForward={() => fillForward(openIdx, 0)}
+            onAddSet={() => addSet(openIdx)}
+            onRemoveSet={(setIdx) => removeSet(openIdx, setIdx)}
+            onNoteChange={(note) => setNote(openIdx, note)}
+            onInteract={cancelAutoReturn}
           />
-          {wake.supported && wake.granted && (
-            <span className="session-status__wake">Screen staying on</span>
-          )}
-          {wake.supported && !wake.granted && (
-            <span className="session-status__wake">
-              Screen may sleep — set Auto-Lock to Never.
-            </span>
-          )}
-        </div>
+        ) : (
+          <>
+            {header}
 
-        {showReadiness && (
-          <ReadinessCard checkIn={checkIn} onChange={updateReadiness} />
-        )}
+            {showWatchNudge && (
+              <div className="watch-bar">
+                <span className="watch-bar__text">⌚️ Start on your Watch</span>
+                <span className="watch-bar__actions">
+                  <button
+                    className="watch-bar__btn"
+                    onClick={() => dismissWatchNudge(false)}
+                  >
+                    Started
+                  </button>
+                  <button
+                    className="watch-bar__btn watch-bar__btn--quiet"
+                    onClick={() => dismissWatchNudge(true)}
+                    aria-label="Don’t remind me about the Watch"
+                  >
+                    Never
+                  </button>
+                </span>
+              </div>
+            )}
 
-        {programDay.coachNotes && (
-          <div className="coachnote">
-            <ClampText text={programDay.coachNotes}>
-              <Markdown text={programDay.coachNotes} />
-            </ClampText>
-          </div>
-        )}
+            <div className="session-status">
+              <SessionTimer
+                startedAt={startedAt}
+                onRestart={() => setStartedAt(Date.now())}
+              />
+              {wake.supported && wake.granted && (
+                <span className="session-status__wake">Screen staying on</span>
+              )}
+              {wake.supported && !wake.granted && (
+                <span className="session-status__wake">
+                  Screen may sleep — set Auto-Lock to Never.
+                </span>
+              )}
+            </div>
 
-        <div className="exercise-cards">
-          {exercises.map((ex, exIdx) => (
-            <ExerciseCard
-              key={`${ex.name}-${exIdx}`}
-              ex={ex}
-              previous={previous[exIdx] ?? null}
-              onUpdateSet={(setIdx, patch) => {
-                if (patch.weightKg !== undefined) markWeightEdited(exIdx, setIdx);
-                updateSet(exIdx, setIdx, patch);
-              }}
-              onCommitSet={(setIdx) => commitSet(exIdx, setIdx)}
-              onFillForward={() => fillForward(exIdx, 0)}
-              onAddSet={() => addSet(exIdx)}
-              onRemoveSet={(setIdx) => removeSet(exIdx, setIdx)}
-              activeSet={active?.ex === exIdx ? active.set : null}
-              advanceToken={active?.ex === exIdx ? active.token : 0}
+            {showReadiness && (
+              <ReadinessCard checkIn={checkIn} onChange={updateReadiness} />
+            )}
+
+            {programDay.coachNotes && (
+              <div className="coachnote">
+                <ClampText text={programDay.coachNotes}>
+                  <Markdown text={programDay.coachNotes} />
+                </ClampText>
+              </div>
+            )}
+
+            <SessionIndex
+              exercises={exercises}
+              previous={previous}
+              onOpen={openExercise}
             />
-          ))}
-        </div>
+          </>
+        )}
 
         {error && <div className="banner banner--error">{error}</div>}
       </div>
 
       {/* The rest countdown floats over the session as a circular pop-out
           (upper-right, clear of the row he is working on) rather than living in
-          the footer, so it is readable at arm's length from the rack. */}
+          the footer, so it is readable at arm's length from the rack. It is
+          mounted ABOVE the index/page switch on purpose: rest runs across
+          exercises, so it must not unmount when he navigates. */}
       {restEndsAt !== null && !finishing && (
         <RestTimer
           endsAt={restEndsAt}
@@ -756,44 +860,51 @@ export function SessionRunner({
         />
       )}
 
-      {/* Sticky finish footer. */}
-      <div className="finish-footer">
-        {!finishing ? (
-          <button className="btn" onClick={() => setFinishing(true)}>
-            Finish session
-            <span className="finish-footer__count">{totalDone} done</span>
-          </button>
-        ) : (
-          <div className="finish-sheet">
-            <label className="field__label" htmlFor="feedback">
-              Anything to tell the coach?
-            </label>
-            <textarea
-              id="feedback"
-              className="input finish-sheet__textarea"
-              rows={3}
-              placeholder="e.g. lower back felt tight on the last set"
-              value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
-            />
-            <p className="field__hint">
-              A note here updates the rest of your week automatically.
-            </p>
-            <div className="finish-sheet__actions">
-              <button
-                className="btn btn--ghost btn--inline"
-                onClick={() => setFinishing(false)}
-                disabled={submitting}
-              >
-                Back
-              </button>
-              <button className="btn" onClick={handleFinish} disabled={submitting}>
-                {submitting ? 'Logging…' : 'Log session'}
-              </button>
+      {/* Sticky finish footer — the index's, not an exercise page's: finishing
+          the session is a decision made looking at the whole day. */}
+      {openIdx === null && (
+        <div className="finish-footer">
+          {!finishing ? (
+            <button className="btn" onClick={() => setFinishing(true)}>
+              Finish session
+              <span className="finish-footer__count">{totalDone} done</span>
+            </button>
+          ) : (
+            <div className="finish-sheet">
+              <label className="field__label" htmlFor="feedback">
+                Anything to tell the coach?
+              </label>
+              <textarea
+                id="feedback"
+                className="input finish-sheet__textarea"
+                rows={3}
+                placeholder="e.g. lower back felt tight on the last set"
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+              />
+              <p className="field__hint">
+                A note here updates the rest of your week automatically.
+              </p>
+              <div className="finish-sheet__actions">
+                <button
+                  className="btn btn--ghost btn--inline"
+                  onClick={() => setFinishing(false)}
+                  disabled={submitting}
+                >
+                  Back
+                </button>
+                <button
+                  className="btn"
+                  onClick={handleFinish}
+                  disabled={submitting}
+                >
+                  {submitting ? 'Logging…' : 'Log session'}
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -996,215 +1107,6 @@ function ExercisePreviewCard({
           {last && <div className="ex-card__last">{last}</div>}
         </div>
       </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// Exercise card with per-set logging
-// ─────────────────────────────────────────────────────────────
-
-function ExerciseCard({
-  ex,
-  previous,
-  onUpdateSet,
-  onCommitSet,
-  onFillForward,
-  onAddSet,
-  onRemoveSet,
-  activeSet,
-  advanceToken,
-}: {
-  ex: LoggedExercise;
-  previous: LoggedExercise | null;
-  onUpdateSet: (setIdx: number, patch: Partial<LoggedSet>) => void;
-  onCommitSet: (setIdx: number) => void;
-  onFillForward: () => void;
-  onAddSet: () => void;
-  onRemoveSet: (setIdx: number) => void;
-  /** Index of the highlighted "next up" row, or null when it is elsewhere. */
-  activeSet: number | null;
-  /** Bumps when a ✓ moved the highlight here — the active row scrolls itself in. */
-  advanceToken: number;
-}) {
-  const done = doneSetCount(ex.sets);
-  const last = previousLine(previous);
-
-  return (
-    <div className="card ex-card">
-      <div className="ex-card__head">
-        <ExerciseImage slug={ex.slug} alt={ex.name} />
-        <div className="exrow__body">
-          <div className="exrow__name">{ex.name}</div>
-          <div className="exrow__meta">
-            {ex.targetSets} × {ex.targetRepRange}
-          </div>
-          {last && <div className="ex-card__last">{last}</div>}
-        </div>
-        <div className="ex-card__progress">
-          {done}/{ex.sets.length}
-        </div>
-      </div>
-
-      <div className="set-rows">
-        <div className="set-row set-row--header">
-          <span className="set-row__idx">Set</span>
-          <span className="set-row__weight-label">kg</span>
-          <span className="set-row__reps-label">Reps</span>
-          <span className="set-row__remove-label" />
-          <span className="set-row__remove-label" />
-        </div>
-        {ex.sets.map((set, i) => (
-          <SetRow
-            key={i}
-            index={i}
-            set={set}
-            placeholder={placeholderForSet(previous, i)}
-            done={isSetDone(set)}
-            committed={set.done === true}
-            active={activeSet === i}
-            advanceToken={advanceToken}
-            onChange={(patch) => onUpdateSet(i, patch)}
-            onCommit={() => onCommitSet(i)}
-            onWeightBlur={i === 0 ? onFillForward : undefined}
-            onRemove={ex.sets.length > 1 ? () => onRemoveSet(i) : undefined}
-          />
-        ))}
-      </div>
-
-      <button className="btn btn--ghost btn--inline ex-card__add" onClick={onAddSet}>
-        + Add set
-      </button>
-    </div>
-  );
-}
-
-function SetRow({
-  index,
-  set,
-  placeholder,
-  done,
-  committed,
-  active,
-  advanceToken,
-  onChange,
-  onCommit,
-  onWeightBlur,
-  onRemove,
-}: {
-  index: number;
-  set: LoggedSet;
-  /** Last session's numbers for this row — rendered as faint guidance only. */
-  placeholder: { reps?: number; weightKg?: number };
-  done: boolean;
-  /** True when the ✓ was actually tapped (vs. done inferred from reps). */
-  committed: boolean;
-  /** This is the "do this next" row. */
-  active: boolean;
-  /** Changes when a ✓ moved the highlight; the newly active row scrolls in. */
-  advanceToken: number;
-  onChange: (patch: Partial<LoggedSet>) => void;
-  onCommit: () => void;
-  onWeightBlur?: () => void;
-  onRemove?: () => void;
-}) {
-  const weightEmpty = set.weightKg === 0;
-  const repsEmpty = set.reps === 0;
-  const weightGhost = weightEmpty && placeholder.weightKg !== undefined;
-  const repsGhost = repsEmpty && placeholder.reps !== undefined;
-
-  const rowRef = useRef<HTMLDivElement>(null);
-  const weightRef = useRef<HTMLInputElement>(null);
-
-  // Keyed on the token alone: it changes exactly once per ✓-driven advance, so
-  // this can't fire on mount, on a re-render or when he undoes a set. Only the
-  // row that IS the new active one reacts. scrollIntoView is optional-called —
-  // jsdom does not implement it.
-  useEffect(() => {
-    if (!active || advanceToken === 0) return;
-    rowRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
-    if (shouldFocusNextSet()) weightRef.current?.focus?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [advanceToken]);
-
-  return (
-    <div
-      ref={rowRef}
-      className={`set-row${done ? ' set-row--done' : ''}${
-        committed ? ' set-row--committed' : ''
-      }${active ? ' set-row--active' : ''}`}
-    >
-      <span className="set-row__idx">{index + 1}</span>
-
-      <input
-        ref={weightRef}
-        className={`input set-row__weight${
-          weightGhost ? ' set-row__input--ghost' : ''
-        }`}
-        type="number"
-        inputMode="decimal"
-        min={0}
-        step="0.5"
-        value={weightEmpty ? '' : set.weightKg}
-        placeholder={
-          placeholder.weightKg !== undefined ? String(placeholder.weightKg) : '0'
-        }
-        onChange={(e) => onChange({ weightKg: Math.max(0, Number(e.target.value) || 0) })}
-        onBlur={onWeightBlur}
-        aria-label={`Set ${index + 1} weight`}
-      />
-
-      <div className="stepper">
-        <button
-          className="stepper__btn"
-          onClick={() => onChange({ reps: Math.max(0, set.reps - 1) })}
-          aria-label="Decrease reps"
-        >
-          −
-        </button>
-        <input
-          className={`stepper__input${repsGhost ? ' set-row__input--ghost' : ''}`}
-          type="number"
-          inputMode="numeric"
-          min={0}
-          value={repsEmpty ? '' : set.reps}
-          placeholder={
-            placeholder.reps !== undefined ? String(placeholder.reps) : '0'
-          }
-          onChange={(e) => onChange({ reps: Math.max(0, Number(e.target.value) || 0) })}
-          aria-label={`Set ${index + 1} reps`}
-        />
-        <button
-          className="stepper__btn"
-          onClick={() => onChange({ reps: set.reps + 1 })}
-          aria-label="Increase reps"
-        >
-          +
-        </button>
-      </div>
-
-      <button
-        className={`set-row__tick${committed ? ' set-row__tick--on' : ''}`}
-        onClick={onCommit}
-        aria-pressed={committed}
-        aria-label={
-          committed ? `Undo set ${index + 1}` : `Mark set ${index + 1} done`
-        }
-      >
-        ✓
-      </button>
-
-      {onRemove ? (
-        <button
-          className="set-row__remove"
-          onClick={onRemove}
-          aria-label={`Remove set ${index + 1}`}
-        >
-          ×
-        </button>
-      ) : (
-        <span className="set-row__remove-label" />
-      )}
     </div>
   );
 }

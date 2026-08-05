@@ -50,6 +50,8 @@ interface ModelExercise {
   repRange: string;
   targetWeight: string | null;
   notes: string | null;
+  /** 4-digit tempo prescription, e.g. "4030" — null when it doesn't matter. */
+  tempo: string | null;
 }
 
 interface ModelDay {
@@ -118,8 +120,20 @@ export const PROGRAM_SCHEMA: Record<string, unknown> = {
                   type: ['string', 'null'],
                   description: '≤ 12 words, cue only',
                 },
+                tempo: {
+                  type: ['string', 'null'],
+                  description:
+                    'Optional tempo in standard 4-digit notation, e.g. "4030" or "2010" (eccentric / pause / concentric / pause, in seconds). Set it only where tempo genuinely matters — rehab, control work, a lift he rushes — and null otherwise.',
+                },
               },
-              required: ['name', 'sets', 'repRange', 'targetWeight', 'notes'],
+              required: [
+                'name',
+                'sets',
+                'repRange',
+                'targetWeight',
+                'notes',
+                'tempo',
+              ],
               additionalProperties: false,
             },
           },
@@ -214,7 +228,9 @@ export const PROGRAMMING_RULES = `PROGRAMMING RULES — VARIETY AND MOVEMENT PAT
 - Any week with meaningful back volume (roughly 8+ sets) must include BOTH horizontal and vertical pulling, unless his training status contraindicates one. Same principle for pressing (horizontal and overhead) and for lower body (hinge and squat). Never run a whole area's weekly volume through a single pattern, and never put the same pattern on three lifting days — two rows and a pulldown beats three rows, every time.
 - Cover each muscle group with at least 2 DISTINCT movements whenever its weekly volume is meaningful (roughly 8+ sets), and make sure those movements are not all the same pattern. One exercise carrying a whole group's volume is a programming error. Vary the angle (flat, incline, overhead), the grip (pronated, neutral, supinated), machine vs free-weight and bilateral vs unilateral ON TOP of the pattern rotation — never instead of it.
 - Correctives explicitly prescribed in the training status (e.g. physio-assigned work, face pulls every session) are EXEMPT — keep them exactly as prescribed, on every day the status says, and do not swap them for variety's sake. A pattern the status deliberately restricts is exempt the other way round: if it says no overhead pressing or no vertical pulling right now, respect that and do not add the missing pattern back for balance.
-- Keep exercise names conventional gym names so the app can match exercise images. Variety must come from genuinely different movements, never from invented or embellished names.`;
+- Keep exercise names conventional gym names so the app can match exercise images. Variety must come from genuinely different movements, never from invented or embellished names.
+- TEMPO: you may prescribe a tempo on an exercise where it genuinely changes the stimulus — rehab and corrective work, deliberate control work, or a lift Jason is known to rush. Use the standard 4-digit notation (eccentric / pause at the bottom / concentric / pause at the top, in seconds), e.g. "4030" or "2010". Leave it null everywhere it does not matter; a tempo on every exercise is noise he will ignore. The tempo and the exercise note are shown together as COACH TIPS at the top of that exercise's page in the gym, so keep the note to its ≤ 12-word cue limit — the two are read in one glance, mid-set.
+- READ HIS PER-EXERCISE COMMENTS. Recent sessions in the context block carry the comment Jason typed against individual exercises ("was easy, up the weight next time", "left knee niggled on the last set"). Treat them as direct instructions about THAT movement: progress the load or the reps when he says it was easy, hold or back it off when he flags pain or a niggle, and swap the movement when he says it aggravates something. Never program the same load again as if he had said nothing — if you deliberately do not act on a comment, say why in your reply.`;
 
 const DEFAULT_CONTEXT = `No training files are connected yet. Assume a healthy intermediate lifter on a 3-day split — Monday Push, Wednesday Pull, Friday Full Body — with Thursday and Sunday easy cardio, and Tuesday/Saturday rest. Use conventional, safe programming until real training files are connected.`;
 
@@ -240,7 +256,10 @@ function digestSessions(
         .map((e) => {
           const top = e.sets[e.sets.length - 1];
           const load = top ? ` @${top.weightKg}kg×${top.reps}` : '';
-          return `${e.name}${load}`;
+          // His per-exercise comment is the whole point of asking for one — it
+          // must reach the model that writes next week, not stop at the log.
+          const note = e.note?.trim() ? ` [his comment: ${e.note.trim()}]` : '';
+          return `${e.name}${load}${note}`;
         })
         .join(', ');
       return `- ${l.date} (${l.focus}): ${exs}${l.feedback ? ` — note: ${l.feedback}` : ''}`;
@@ -330,6 +349,7 @@ async function fillSlugs(days: ModelDay[]): Promise<ProgramDay[]> {
       repRange: e.repRange,
       targetWeight: e.targetWeight ?? undefined,
       notes: e.notes ?? undefined,
+      tempo: e.tempo ?? undefined,
     })),
   }));
 }

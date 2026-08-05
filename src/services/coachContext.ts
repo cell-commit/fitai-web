@@ -179,7 +179,14 @@ export interface CoachContextData {
   today: string; // YYYY-MM-DD
 }
 
-/** One compact line per session, newest first. */
+/**
+ * One compact line per session, newest first.
+ *
+ * Includes the per-exercise comment Jason typed in the gym ("was easy, up the
+ * weight next time"). It used to be dropped here, which made the box he types
+ * into decorative: the note reached the log and the Drive history file but never
+ * the model that programmes the next week.
+ */
 function digestSessions(logs: SessionLog[]): string {
   return logs
     .slice(0, 14)
@@ -187,7 +194,8 @@ function digestSessions(logs: SessionLog[]): string {
       const exs = l.exercises
         .map((e) => {
           const summary = formatSetsSummary(e.sets);
-          return summary ? `${e.name} ${summary}` : e.name;
+          const head = summary ? `${e.name} ${summary}` : e.name;
+          return e.note?.trim() ? `${head} [his comment: ${e.note.trim()}]` : head;
         })
         .join('; ');
       const note = l.feedback?.trim() ? ` — note: ${l.feedback.trim()}` : '';

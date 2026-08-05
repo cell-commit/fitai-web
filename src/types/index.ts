@@ -86,6 +86,14 @@ export interface ProgramExercise {
   repRange: string; // e.g. "12-15"
   targetWeight?: string;
   notes?: string;
+  /**
+   * Prescribed tempo in the standard 4-digit notation — eccentric / pause /
+   * concentric / pause in seconds, e.g. "4030" (4s down, no pause, 3s up… ) or
+   * "2010". Optional and only set where it matters (rehab, control work, a lift
+   * he rushes); surfaced with `notes` in the COACH TIPS block at the top of the
+   * in-gym exercise page.
+   */
+  tempo?: string;
 }
 
 export interface ProgramDay {

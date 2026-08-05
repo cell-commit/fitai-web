@@ -65,26 +65,54 @@ function renderRunner(overrides: Partial<React.ComponentProps<typeof SessionRunn
   );
 }
 
-/** All weight inputs on screen, in row order, for one exercise card. */
-function weightInputs(exerciseIdx = 0): HTMLInputElement[] {
-  const cards = document.querySelectorAll('.ex-card');
+// ── Navigation helpers (the session is an index + a page per exercise) ──
+
+/** The index rows, in day order. */
+function indexRows(): HTMLButtonElement[] {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>('.exindex-row'));
+}
+
+/** One index row by exercise name. */
+function indexRow(name: string): HTMLButtonElement {
+  const row = indexRows().find((r) => r.textContent?.includes(name));
+  if (!row) throw new Error(`no index row for ${name}`);
+  return row;
+}
+
+/** True when an exercise page (not the index) is on screen. */
+function onExercisePage(): boolean {
+  return document.querySelector('.ex-page') !== null;
+}
+
+/** Open an exercise's page from the index and wait for its set rows. */
+async function openExercise(name = 'Bench Press') {
+  await userEvent.click(indexRow(name));
+  await screen.findByLabelText('Set 1 weight');
+}
+
+/** Back to the index from an exercise page. */
+async function backToIndex() {
+  await userEvent.click(screen.getByLabelText('Back to exercises'));
+  await waitFor(() => expect(onExercisePage()).toBe(false));
+}
+
+/** All weight inputs on the open exercise page, in row order. */
+function weightInputs(): HTMLInputElement[] {
   return Array.from(
-    cards[exerciseIdx].querySelectorAll<HTMLInputElement>('.set-row__weight')
+    document.querySelectorAll<HTMLInputElement>('.set-row__weight')
   );
 }
 
-function repsInputs(exerciseIdx = 0): HTMLInputElement[] {
-  const cards = document.querySelectorAll('.ex-card');
+function repsInputs(): HTMLInputElement[] {
   return Array.from(
-    cards[exerciseIdx].querySelectorAll<HTMLInputElement>('.stepper__input')
+    document.querySelectorAll<HTMLInputElement>('.stepper__input')
   );
 }
 
-/** Tick buttons, in row order, for one exercise card. */
-function tickButtons(exerciseIdx = 0): HTMLButtonElement[] {
-  const cards = document.querySelectorAll('.ex-card');
+/** Tick buttons on the open exercise page, in row order. */
+function tickButtons(): HTMLButtonElement[] {
   return Array.from(
-    cards[exerciseIdx].querySelectorAll<HTMLButtonElement>('.set-row__tick')
+    document.querySelectorAll<HTMLButtonElement>('.set-row__tick')
   );
 }
 
@@ -93,15 +121,23 @@ function restPop(): HTMLElement | null {
   return document.querySelector('.rest-pop');
 }
 
-/** "exerciseIdx:setIdx" of the highlighted next-up row, or null. */
-function activeRow(): string | null {
-  const cards = Array.from(document.querySelectorAll('.ex-card'));
-  for (let i = 0; i < cards.length; i++) {
-    const rows = Array.from(cards[i].querySelectorAll('.set-row'));
-    const j = rows.findIndex((r) => r.classList.contains('set-row--active'));
-    if (j >= 0) return `${i}:${j - 1}`; // row 0 is the header row
-  }
-  return null;
+/** Index of the highlighted next-up row on the open page, or null. */
+function activeRow(): number | null {
+  const rows = Array.from(document.querySelectorAll('.set-rows .set-row'));
+  const j = rows.findIndex((r) => r.classList.contains('set-row--active'));
+  return j >= 0 ? j - 1 : null; // row 0 is the header row
+}
+
+/** The swipe-to-delete wrappers, in row order. */
+function rowWraps(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>('.set-row-wrap'));
+}
+
+/** Drag a set row left far enough to reveal its bin (Pointer Events). */
+function swipeLeft(wrap: Element) {
+  fireEvent.pointerDown(wrap, { clientX: 300, clientY: 200, pointerId: 1 });
+  fireEvent.pointerMove(wrap, { clientX: 230, clientY: 202, pointerId: 1 });
+  fireEvent.pointerUp(wrap, { clientX: 230, clientY: 202, pointerId: 1 });
 }
 
 /**
@@ -143,20 +179,73 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('SessionRunner — rendering a program day', () => {
-  it('renders one card per exercise with its target and set rows', async () => {
+// ─────────────────────────────────────────────────────────────
+// The session index (WAS: one long scroll of every exercise and
+// every set row)
+// ─────────────────────────────────────────────────────────────
+
+describe('SessionRunner — the exercise index', () => {
+  it('lists one row per exercise with its target and set progress', async () => {
     renderRunner();
 
     expect(await screen.findByText('Bench Press')).toBeInTheDocument();
     expect(screen.getByText('Shoulder Press')).toBeInTheDocument();
     expect(screen.getByText('3 × 8-10')).toBeInTheDocument();
     expect(screen.getByText('2 × 10-12')).toBeInTheDocument();
-    // 3 set rows for the first exercise, 2 for the second.
-    expect(weightInputs(0)).toHaveLength(3);
-    expect(weightInputs(1)).toHaveLength(2);
-    // Nothing done yet.
-    expect(screen.getByText('0/3')).toBeInTheDocument();
+    expect(indexRows()).toHaveLength(2);
+    expect(screen.getByText('0/3 sets')).toBeInTheDocument();
+    expect(screen.getByText('0/2 sets')).toBeInTheDocument();
     expect(screen.getByText('0 done')).toBeInTheDocument();
+    // No set rows out here: logging happens on an exercise's own page.
+    expect(document.querySelectorAll('.set-row')).toHaveLength(0);
+  });
+
+  it('tapping a row opens that exercise, and back returns to the index', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+
+    await openExercise('Bench Press');
+
+    expect(onExercisePage()).toBe(true);
+    expect(weightInputs()).toHaveLength(3); // only THIS exercise's rows
+    expect(screen.getByText('1 of 2')).toBeInTheDocument();
+    // The finish footer belongs to the index, not to an exercise page.
+    expect(screen.queryByText('Finish session')).toBeNull();
+
+    await backToIndex();
+    expect(indexRows()).toHaveLength(2);
+    expect(screen.getByText('Finish session')).toBeInTheDocument();
+  });
+
+  it('opens the second exercise with its own rows', async () => {
+    renderRunner();
+    await screen.findByText('Shoulder Press');
+
+    await openExercise('Shoulder Press');
+
+    expect(weightInputs()).toHaveLength(2);
+    expect(screen.getByText('2 of 2')).toBeInTheDocument();
+  });
+
+  it('shows live progress and ticks an exercise off once every set is done', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Shoulder Press');
+
+    await userEvent.click(tickButtons()[0]);
+    await backToIndex();
+    expect(screen.getByText('1/2 sets')).toBeInTheDocument();
+    expect(indexRow('Shoulder Press').className).not.toContain(
+      'exindex-row--done'
+    );
+
+    await openExercise('Shoulder Press');
+    await userEvent.click(tickButtons()[1]);
+    await waitFor(() => expect(onExercisePage()).toBe(true));
+    await backToIndex();
+
+    expect(screen.getByText('2/2 sets')).toBeInTheDocument();
+    expect(indexRow('Shoulder Press').className).toContain('exindex-row--done');
   });
 
   it('shows the previous session on the "last time" line', async () => {
@@ -165,7 +254,9 @@ describe('SessionRunner — rendering a program day', () => {
 
     expect(await screen.findByText('Last: 10/9/8 @ 60/60/57.5kg')).toBeInTheDocument();
   });
+});
 
+describe('SessionRunner — rendering an exercise page', () => {
   // WAS: every weight input was PREFILLED with the previous session's number,
   // which made an untouched row indistinguishable from a lifted one. Now the
   // inputs start empty and last week shows as a per-set placeholder.
@@ -173,37 +264,42 @@ describe('SessionRunner — rendering a program day', () => {
     await seedPreviousBench();
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
     await waitFor(() =>
-      expect(weightInputs(0)[0]).toHaveAttribute('placeholder', '60')
+      expect(weightInputs()[0]).toHaveAttribute('placeholder', '60')
     );
-    expect(weightInputs(0)[1]).toHaveAttribute('placeholder', '60');
-    expect(weightInputs(0)[2]).toHaveAttribute('placeholder', '57.5');
-    expect(repsInputs(0)[0]).toHaveAttribute('placeholder', '10');
-    expect(repsInputs(0)[2]).toHaveAttribute('placeholder', '8');
+    expect(weightInputs()[1]).toHaveAttribute('placeholder', '60');
+    expect(weightInputs()[2]).toHaveAttribute('placeholder', '57.5');
+    expect(repsInputs()[0]).toHaveAttribute('placeholder', '10');
+    expect(repsInputs()[2]).toHaveAttribute('placeholder', '8');
     // Empty values, and flagged as ghosts so CSS can fade them.
-    expect(weightInputs(0)[0]).toHaveValue(null);
-    expect(weightInputs(0)[0]).toHaveClass('set-row__input--ghost');
+    expect(weightInputs()[0]).toHaveValue(null);
+    expect(weightInputs()[0]).toHaveClass('set-row__input--ghost');
+
     // No history for the second exercise — a plain "0" placeholder, no ghost.
-    expect(weightInputs(1)[0]).toHaveAttribute('placeholder', '0');
-    expect(weightInputs(1)[0]).not.toHaveClass('set-row__input--ghost');
+    await backToIndex();
+    await openExercise('Shoulder Press');
+    expect(weightInputs()[0]).toHaveAttribute('placeholder', '0');
+    expect(weightInputs()[0]).not.toHaveClass('set-row__input--ghost');
   });
 
   it('falls back to the last done set when the previous session had fewer sets', async () => {
     await seedPreviousBench();
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
     await waitFor(() =>
-      expect(weightInputs(0)[0]).toHaveAttribute('placeholder', '60')
+      expect(weightInputs()[0]).toHaveAttribute('placeholder', '60')
     );
 
-    await userEvent.click(screen.getAllByText('+ Add set')[0]);
+    await userEvent.click(screen.getByText('+ Add set'));
 
     // Row 4 has no counterpart last week → the last done set (8 @ 57.5).
     await waitFor(() =>
-      expect(weightInputs(0)[3]).toHaveAttribute('placeholder', '57.5')
+      expect(weightInputs()[3]).toHaveAttribute('placeholder', '57.5')
     );
-    expect(repsInputs(0)[3]).toHaveAttribute('placeholder', '8');
+    expect(repsInputs()[3]).toHaveAttribute('placeholder', '8');
   });
 });
 
@@ -211,33 +307,348 @@ describe('SessionRunner — logging sets', () => {
   it('marks a set done once it has reps and counts it in the footer', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.type(repsInputs(0)[0], '10');
+    await userEvent.type(repsInputs()[0], '10');
 
     await waitFor(() => expect(screen.getByText('1/3')).toBeInTheDocument());
     expect(document.querySelectorAll('.set-row--done')).toHaveLength(1);
+
+    await backToIndex();
+    expect(screen.getByText('1/3 sets')).toBeInTheDocument();
     expect(screen.getByText('1 done')).toBeInTheDocument();
   });
 
   it('the +/− stepper adjusts reps', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
     await userEvent.click(screen.getAllByLabelText('Increase reps')[0]);
-    expect(repsInputs(0)[0]).toHaveValue(1);
+    expect(repsInputs()[0]).toHaveValue(1);
     await userEvent.click(screen.getAllByLabelText('Decrease reps')[0]);
-    expect(repsInputs(0)[0]).toHaveValue(null);
+    expect(repsInputs()[0]).toHaveValue(null);
   });
 
-  it('adds and removes set rows', async () => {
+  it('adds a set row', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.click(screen.getAllByText('+ Add set')[0]);
-    await waitFor(() => expect(weightInputs(0)).toHaveLength(4));
+    await userEvent.click(screen.getByText('+ Add set'));
 
-    await userEvent.click(screen.getByLabelText('Remove set 4'));
-    await waitFor(() => expect(weightInputs(0)).toHaveLength(3));
+    await waitFor(() => expect(weightInputs()).toHaveLength(4));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Swipe-to-delete (WAS: a permanent × at the end of every row)
+// ─────────────────────────────────────────────────────────────
+
+describe('SessionRunner — swipe to delete a set', () => {
+  it('has no × on the row any more', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+
+    expect(document.querySelector('.set-row__remove')).toBeNull();
+    expect(screen.queryByText('×')).toBeNull();
+  });
+
+  it('swiping left reveals a bin, and tapping it removes the row', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+    await userEvent.type(weightInputs()[2], '70');
+
+    const wrap = rowWraps()[2];
+    expect(wrap.className).not.toContain('set-row-wrap--revealed');
+
+    swipeLeft(wrap);
+    await waitFor(() =>
+      expect(rowWraps()[2].className).toContain('set-row-wrap--revealed')
+    );
+
+    await userEvent.click(screen.getByLabelText('Remove set 3'));
+
+    await waitFor(() => expect(weightInputs()).toHaveLength(2));
+  });
+
+  it('a vertical drag scrolls instead of revealing the bin', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+
+    const wrap = rowWraps()[0];
+    fireEvent.pointerDown(wrap, { clientX: 300, clientY: 200, pointerId: 1 });
+    fireEvent.pointerMove(wrap, { clientX: 296, clientY: 120, pointerId: 1 });
+    fireEvent.pointerUp(wrap, { clientX: 296, clientY: 120, pointerId: 1 });
+
+    expect(rowWraps()[0].className).not.toContain('set-row-wrap--revealed');
+  });
+
+  it('tapping another row puts a revealed bin away again', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+
+    swipeLeft(rowWraps()[0]);
+    await waitFor(() =>
+      expect(rowWraps()[0].className).toContain('set-row-wrap--revealed')
+    );
+
+    fireEvent.pointerDown(rowWraps()[2], {
+      clientX: 300,
+      clientY: 260,
+      pointerId: 1,
+    });
+
+    await waitFor(() =>
+      expect(rowWraps()[0].className).not.toContain('set-row-wrap--revealed')
+    );
+  });
+
+  it('the bin is reachable (and reveals itself) with the keyboard alone', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+
+    const bin = screen.getByLabelText('Remove set 2');
+    act(() => bin.focus());
+
+    await waitFor(() =>
+      expect(rowWraps()[1].className).toContain('set-row-wrap--revealed')
+    );
+    expect(bin.tagName).toBe('BUTTON');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Coach tips (tempo + cue) at the top of an exercise page
+// ─────────────────────────────────────────────────────────────
+
+describe('SessionRunner — coach tips', () => {
+  const TIPPED_DAY: ProgramDay = {
+    ...DAY,
+    exercises: [
+      {
+        name: 'Bench Press',
+        slug: 'bench-press',
+        sets: 3,
+        repRange: '8-10',
+        tempo: '4030',
+        notes: 'elbows tucked, slow eccentric',
+      },
+      DAY.exercises[1],
+    ],
+  };
+
+  it('shows the prescribed tempo and cue on that exercise page', async () => {
+    render(
+      <SessionRunner programDay={TIPPED_DAY} today={DAY.date} showReadiness={false} />
+    );
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+
+    expect(document.querySelector('.coach-tips')).not.toBeNull();
+    expect(screen.getByText('Coach tips')).toBeInTheDocument();
+    expect(screen.getByText('4030')).toBeInTheDocument();
+    expect(screen.getByText('elbows tucked, slow eccentric')).toBeInTheDocument();
+  });
+
+  it('renders nothing when the coach prescribed neither', async () => {
+    render(
+      <SessionRunner programDay={TIPPED_DAY} today={DAY.date} showReadiness={false} />
+    );
+    await screen.findByText('Shoulder Press');
+    await openExercise('Shoulder Press');
+
+    expect(document.querySelector('.coach-tips')).toBeNull();
+    expect(screen.queryByText('Coach tips')).toBeNull();
+  });
+
+  it('shows a tempo-only prescription without an empty cue line', async () => {
+    const day: ProgramDay = {
+      ...DAY,
+      exercises: [{ ...DAY.exercises[0], tempo: '2010' }, DAY.exercises[1]],
+    };
+    render(
+      <SessionRunner programDay={day} today={DAY.date} showReadiness={false} />
+    );
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+
+    expect(screen.getByText('2010')).toBeInTheDocument();
+    expect(document.querySelector('.coach-tips__cue')).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// The per-exercise comment box
+// ─────────────────────────────────────────────────────────────
+
+describe('SessionRunner — the comment box', () => {
+  it('persists what he types into the session draft', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+
+    await userEvent.type(
+      screen.getByLabelText('How did that feel?'),
+      'easy — up the weight'
+    );
+
+    await waitFor(async () => {
+      const draft = await getSessionDraft(DAY.date);
+      expect(draft?.exercises[0].note).toBe('easy — up the weight');
+    });
+  });
+
+  it('survives leaving the exercise and coming back', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+    await userEvent.type(screen.getByLabelText('How did that feel?'), 'felt heavy');
+
+    await backToIndex();
+    await openExercise('Bench Press');
+
+    expect(screen.getByLabelText('How did that feel?')).toHaveValue('felt heavy');
+  });
+
+  it('rides into the finished SessionLog', async () => {
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+    await userEvent.click(tickButtons()[0]);
+    await userEvent.type(
+      screen.getByLabelText('How did that feel?'),
+      'easy — up the weight next time'
+    );
+    await backToIndex();
+
+    await userEvent.click(screen.getByText('Finish session'));
+    await userEvent.click(screen.getByText('Log session'));
+    await screen.findByText('Session done');
+
+    const logs = await listSessionLogs();
+    expect(logs[0].exercises[0].note).toBe('easy — up the weight next time');
+    // A box he never typed into logs no note at all, not an empty string.
+    expect(logs[0].exercises[1].note).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Auto-return after the last set
+// ─────────────────────────────────────────────────────────────
+
+describe('SessionRunner — auto-return after the last set', () => {
+  /** Commit both sets of Shoulder Press from its page. */
+  async function commitBothSets() {
+    fireEvent.click(indexRow('Shoulder Press'));
+    await flush();
+    fireEvent.click(tickButtons()[0]);
+    await flush();
+    fireEvent.click(tickButtons()[1]);
+    await flush();
+  }
+
+  it('shows the complete beat, then returns to the index with it ticked off', async () => {
+    vi.useFakeTimers();
+    renderRunner();
+    await flush();
+
+    await commitBothSets();
+
+    // The beat: still on the exercise, long enough to add a set or type.
+    expect(onExercisePage()).toBe(true);
+    expect(screen.getByText(/Exercise complete/)).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1500);
+    });
+    await flush();
+
+    expect(onExercisePage()).toBe(false);
+    expect(indexRow('Shoulder Press').className).toContain('exindex-row--done');
+    expect(indexRow('Shoulder Press').textContent).toContain('2/2 sets');
+  });
+
+  it('stays put when he adds a set during the pause', async () => {
+    vi.useFakeTimers();
+    renderRunner();
+    await flush();
+
+    await commitBothSets();
+    fireEvent.click(screen.getByText('+ Add set'));
+    await flush();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    await flush();
+
+    expect(onExercisePage()).toBe(true);
+    expect(screen.queryByText(/Exercise complete/)).toBeNull();
+    expect(weightInputs()).toHaveLength(3);
+  });
+
+  it('stays put when he reaches for the comment box during the pause', async () => {
+    vi.useFakeTimers();
+    renderRunner();
+    await flush();
+
+    await commitBothSets();
+    fireEvent.pointerDown(screen.getByLabelText('How did that feel?'), {
+      clientX: 100,
+      clientY: 400,
+      pointerId: 1,
+    });
+    await flush();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    await flush();
+
+    expect(onExercisePage()).toBe(true);
+  });
+
+  it('stays put when he un-ticks the set he just committed', async () => {
+    vi.useFakeTimers();
+    renderRunner();
+    await flush();
+
+    await commitBothSets();
+    fireEvent.click(tickButtons()[1]);
+    await flush();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    await flush();
+
+    expect(onExercisePage()).toBe(true);
+    expect(document.querySelectorAll('.set-row--committed')).toHaveLength(1);
+  });
+
+  it('does not fire for a set that is not the exercise’s last', async () => {
+    vi.useFakeTimers();
+    renderRunner();
+    await flush();
+
+    fireEvent.click(indexRow('Bench Press'));
+    await flush();
+    fireEvent.click(tickButtons()[0]);
+    await flush();
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    await flush();
+
+    expect(onExercisePage()).toBe(true);
+    expect(screen.queryByText(/Exercise complete/)).toBeNull();
   });
 });
 
@@ -245,8 +656,9 @@ describe('SessionRunner — draft persistence', () => {
   it('persists working state to the session draft', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.type(repsInputs(0)[0], '12');
+    await userEvent.type(repsInputs()[0], '12');
 
     await waitFor(async () => {
       const draft = await getSessionDraft(DAY.date);
@@ -278,8 +690,11 @@ describe('SessionRunner — draft persistence', () => {
     renderRunner();
     await screen.findByText('Bench Press');
 
-    await waitFor(() => expect(repsInputs(0)[0]).toHaveValue(11));
-    expect(weightInputs(0)[0]).toHaveValue(62.5);
+    // The index tells him where he got to; the page has the numbers.
+    expect(screen.getByText('1/3 sets')).toBeInTheDocument();
+    await openExercise('Bench Press');
+    await waitFor(() => expect(repsInputs()[0]).toHaveValue(11));
+    expect(weightInputs()[0]).toHaveValue(62.5);
     expect(screen.getByText('1/3')).toBeInTheDocument();
   });
 });
@@ -289,9 +704,11 @@ describe('SessionRunner — finishing', () => {
     const onComplete = vi.fn();
     renderRunner({ onComplete });
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.type(repsInputs(0)[0], '10');
-    await userEvent.type(weightInputs(0)[0], '60');
+    await userEvent.type(repsInputs()[0], '10');
+    await userEvent.type(weightInputs()[0], '60');
+    await backToIndex();
 
     await userEvent.click(screen.getByText('Finish session'));
     await userEvent.click(screen.getByText('Log session'));
@@ -318,16 +735,17 @@ describe('SessionRunner — the ✓ commit', () => {
     await seedPreviousBench();
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
     await waitFor(() =>
-      expect(weightInputs(0)[0]).toHaveAttribute('placeholder', '60')
+      expect(weightInputs()[0]).toHaveAttribute('placeholder', '60')
     );
 
     // The row is untouched — this is the regression that would otherwise write
     // 0 kg into the log and poison next week's getLastLoggedExercise.
-    await userEvent.click(tickButtons(0)[0]);
+    await userEvent.click(tickButtons()[0]);
 
-    await waitFor(() => expect(weightInputs(0)[0]).toHaveValue(60));
-    expect(repsInputs(0)[0]).toHaveValue(10);
+    await waitFor(() => expect(weightInputs()[0]).toHaveValue(60));
+    expect(repsInputs()[0]).toHaveValue(10);
     const draft = await getSessionDraft(DAY.date);
     expect(draft?.exercises[0].sets[0]).toMatchObject({
       reps: 10,
@@ -339,8 +757,9 @@ describe('SessionRunner — the ✓ commit', () => {
   it('marks the row done and counts a ✓-ed 0-rep set', async () => {
     renderRunner(); // no history at all → no placeholder to materialise
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.click(tickButtons(0)[0]);
+    await userEvent.click(tickButtons()[0]);
 
     await waitFor(() => expect(screen.getByText('1/3')).toBeInTheDocument());
     expect(document.querySelectorAll('.set-row--done')).toHaveLength(1);
@@ -352,27 +771,30 @@ describe('SessionRunner — the ✓ commit', () => {
     await seedPreviousBench();
     renderRunner();
     await screen.findByText('Bench Press');
-    await userEvent.click(tickButtons(0)[0]);
+    await openExercise('Bench Press');
+    await userEvent.click(tickButtons()[0]);
     await waitFor(() => expect(restPop()).not.toBeNull());
 
-    await userEvent.click(tickButtons(0)[0]);
+    await userEvent.click(tickButtons()[0]);
 
     await waitFor(() => expect(restPop()).toBeNull());
     expect(document.querySelectorAll('.set-row--done')).toHaveLength(0);
     // The numbers he can see are kept — only the ✓ goes away.
-    expect(weightInputs(0)[0]).toHaveValue(60);
+    expect(weightInputs()[0]).toHaveValue(60);
   });
 
   it('finishing after a ✓ writes the materialised numbers to the log', async () => {
     await seedPreviousBench();
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
     await waitFor(() =>
-      expect(weightInputs(0)[0]).toHaveAttribute('placeholder', '60')
+      expect(weightInputs()[0]).toHaveAttribute('placeholder', '60')
     );
 
-    await userEvent.click(tickButtons(0)[0]);
-    await waitFor(() => expect(weightInputs(0)[0]).toHaveValue(60));
+    await userEvent.click(tickButtons()[0]);
+    await waitFor(() => expect(weightInputs()[0]).toHaveValue(60));
+    await backToIndex();
     await userEvent.click(screen.getByText('Finish session'));
     await userEvent.click(screen.getByText('Log session'));
     await screen.findByText('Session done');
@@ -390,23 +812,25 @@ describe('SessionRunner — weight fill-forward', () => {
   it('a ✓ copies the weight onto later uncommitted rows', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.type(weightInputs(0)[0], '65');
-    await userEvent.click(tickButtons(0)[0]);
+    await userEvent.type(weightInputs()[0], '65');
+    await userEvent.click(tickButtons()[0]);
 
-    await waitFor(() => expect(weightInputs(0)[1]).toHaveValue(65));
-    expect(weightInputs(0)[2]).toHaveValue(65);
+    await waitFor(() => expect(weightInputs()[1]).toHaveValue(65));
+    expect(weightInputs()[2]).toHaveValue(65);
   });
 
   it('blurring row 1 fills forward without needing the ✓', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.type(weightInputs(0)[0], '52.5');
+    await userEvent.type(weightInputs()[0], '52.5');
     await userEvent.tab();
 
-    await waitFor(() => expect(weightInputs(0)[1]).toHaveValue(52.5));
-    expect(weightInputs(0)[2]).toHaveValue(52.5);
+    await waitFor(() => expect(weightInputs()[1]).toHaveValue(52.5));
+    expect(weightInputs()[2]).toHaveValue(52.5);
     // Nothing was marked done by a mere blur.
     expect(document.querySelectorAll('.set-row--done')).toHaveLength(0);
   });
@@ -414,13 +838,14 @@ describe('SessionRunner — weight fill-forward', () => {
   it('leaves a row he hand-edited alone', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.type(weightInputs(0)[2], '70');
-    await userEvent.type(weightInputs(0)[0], '65');
+    await userEvent.type(weightInputs()[2], '70');
+    await userEvent.type(weightInputs()[0], '65');
     await userEvent.tab();
 
-    await waitFor(() => expect(weightInputs(0)[1]).toHaveValue(65));
-    expect(weightInputs(0)[2]).toHaveValue(70);
+    await waitFor(() => expect(weightInputs()[1]).toHaveValue(65));
+    expect(weightInputs()[2]).toHaveValue(70);
   });
 
   // WAS: a full-width "→ Use 60kg for all sets" button under row 1. Removed —
@@ -429,8 +854,9 @@ describe('SessionRunner — weight fill-forward', () => {
   it('no longer shows a "use for all sets" button', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.type(weightInputs(0)[0], '60');
+    await userEvent.type(weightInputs()[0], '60');
 
     expect(screen.queryByText(/for all sets/)).toBeNull();
     expect(document.querySelector('.set-row__fill')).toBeNull();
@@ -441,37 +867,44 @@ describe('SessionRunner — the active set advances on ✓', () => {
   it('starts on the first set and moves to the next row on each ✓', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
-    await waitFor(() => expect(activeRow()).toBe('0:0'));
+    await openExercise('Bench Press');
+    await waitFor(() => expect(activeRow()).toBe(0));
 
-    await userEvent.click(tickButtons(0)[0]);
-    await waitFor(() => expect(activeRow()).toBe('0:1'));
+    await userEvent.click(tickButtons()[0]);
+    await waitFor(() => expect(activeRow()).toBe(1));
 
-    await userEvent.click(tickButtons(0)[1]);
-    await waitFor(() => expect(activeRow()).toBe('0:2'));
+    await userEvent.click(tickButtons()[1]);
+    await waitFor(() => expect(activeRow()).toBe(2));
   });
 
-  it('committing the last set advances to the first set of the next exercise', async () => {
+  it('committing the last set hands the highlight to the next exercise', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.click(tickButtons(0)[0]);
-    await userEvent.click(tickButtons(0)[1]);
-    await userEvent.click(tickButtons(0)[2]);
+    await userEvent.click(tickButtons()[0]);
+    await userEvent.click(tickButtons()[1]);
+    await userEvent.click(tickButtons()[2]);
 
-    await waitFor(() => expect(activeRow()).toBe('1:0'));
     // Committed rows are dimmed/marked so only the active one is bright.
     expect(document.querySelectorAll('.set-row--committed')).toHaveLength(3);
+    expect(activeRow()).toBeNull(); // nothing left to do here
+
+    await backToIndex();
+    await openExercise('Shoulder Press');
+    await waitFor(() => expect(activeRow()).toBe(0));
   });
 
   it('undoing a ✓ brings the highlight back to that row', async () => {
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.click(tickButtons(0)[0]);
-    await waitFor(() => expect(activeRow()).toBe('0:1'));
+    await userEvent.click(tickButtons()[0]);
+    await waitFor(() => expect(activeRow()).toBe(1));
 
-    await userEvent.click(tickButtons(0)[0]);
-    await waitFor(() => expect(activeRow()).toBe('0:0'));
+    await userEvent.click(tickButtons()[0]);
+    await waitFor(() => expect(activeRow()).toBe(0));
   });
 
   it('opens on the first unfinished set of a resumed draft', async () => {
@@ -497,8 +930,9 @@ describe('SessionRunner — the active set advances on ✓', () => {
 
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await waitFor(() => expect(activeRow()).toBe('0:2'));
+    await waitFor(() => expect(activeRow()).toBe(2));
   });
 });
 
@@ -508,8 +942,9 @@ describe('SessionRunner — rest timer', () => {
     const clock = useFrozenClock();
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.click(tickButtons(0)[0]);
+    await userEvent.click(tickButtons()[0]);
     expect(await screen.findByText('1:00')).toBeInTheDocument();
 
     await clock.advance(45_000);
@@ -525,8 +960,9 @@ describe('SessionRunner — rest timer', () => {
     const clock = useFrozenClock();
     renderRunner();
     await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
 
-    await userEvent.click(tickButtons(0)[0]);
+    await userEvent.click(tickButtons()[0]);
 
     const pop = await waitFor(() => {
       const el = restPop();
@@ -546,11 +982,32 @@ describe('SessionRunner — rest timer', () => {
     await clock.advance(0);
   });
 
+  // The timer is mounted above the index/page navigation on purpose: rest runs
+  // between exercises, so it must survive going back and opening the next one.
+  it('keeps running across the index and the next exercise page', async () => {
+    const clock = useFrozenClock();
+    renderRunner();
+    await screen.findByText('Bench Press');
+    await openExercise('Bench Press');
+    await userEvent.click(tickButtons()[0]);
+    await screen.findByText('1:30');
+
+    await backToIndex();
+    await clock.advance(30_000);
+    expect(restPop()).not.toBeNull();
+    expect(screen.getByText('1:00')).toBeInTheDocument();
+
+    await openExercise('Shoulder Press');
+    expect(restPop()).not.toBeNull();
+    expect(screen.getByText('1:00')).toBeInTheDocument();
+  });
+
   it('the ring depletes as the rest runs', async () => {
     const clock = useFrozenClock();
     renderRunner();
     await screen.findByText('Bench Press');
-    await userEvent.click(tickButtons(0)[0]);
+    await openExercise('Bench Press');
+    await userEvent.click(tickButtons()[0]);
     await screen.findByText('1:30');
 
     const ring = () => document.querySelector('.rest-pop__ring-fill')!;
@@ -567,7 +1024,8 @@ describe('SessionRunner — rest timer', () => {
     const clock = useFrozenClock();
     renderRunner();
     await screen.findByText('Bench Press');
-    await userEvent.click(tickButtons(0)[0]);
+    await openExercise('Bench Press');
+    await userEvent.click(tickButtons()[0]);
     expect(await screen.findByText('1:30')).toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText('Fifteen seconds more rest'));
@@ -586,7 +1044,8 @@ describe('SessionRunner — rest timer', () => {
     const clock = useFrozenClock();
     renderRunner();
     await screen.findByText('Bench Press');
-    await userEvent.click(tickButtons(0)[0]);
+    await openExercise('Bench Press');
+    await userEvent.click(tickButtons()[0]);
     await screen.findByText('1:30');
 
     const draft = await getSessionDraft(DAY.date);
@@ -819,6 +1278,7 @@ describe('SessionRunner — start gate', () => {
     expect(document.querySelectorAll('.set-row__tick')).toHaveLength(0);
     expect(screen.queryByLabelText('Session time')).toBeNull();
     expect(screen.queryByText('+ Add set')).toBeNull();
+    expect(indexRows()).toHaveLength(0);
   });
 
   it('does not touch the wake lock or the watch nudge until Start is tapped', async () => {
@@ -835,6 +1295,8 @@ describe('SessionRunner — start gate', () => {
     expect(await screen.findByText('Finish session')).toBeInTheDocument();
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     expect(screen.getByText(NUDGE)).toBeInTheDocument();
+    // Start lands on the index, not on the first exercise.
+    expect(indexRows()).toHaveLength(2);
   });
 
   it('stamps startedAt when Start is tapped, not when the tab was opened', async () => {
@@ -870,7 +1332,9 @@ describe('SessionRunner — start gate', () => {
 
     await userEvent.click(screen.getByText('Start session'));
     await screen.findByText('Finish session');
-    await userEvent.click(tickButtons(0)[0]);
+    await openExercise('Bench Press');
+    await userEvent.click(tickButtons()[0]);
+    await backToIndex();
     await userEvent.click(screen.getByText('Finish session'));
     await userEvent.click(screen.getByText('Log session'));
     await screen.findByText('Session done');
@@ -899,7 +1363,7 @@ describe('SessionRunner — start gate', () => {
     // Straight into the live session, clock continuing from the draft.
     expect(screen.queryByText('Start session')).toBeNull();
     expect(screen.getByText('Finish session')).toBeInTheDocument();
-    await waitFor(() => expect(repsInputs(0)[0]).toHaveValue(10));
+    expect(screen.getByText('1/3 sets')).toBeInTheDocument();
     expect(screen.getByLabelText('Session time')).toHaveTextContent('10:00');
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     // Mid-session reload: the nudge stays down.
@@ -947,7 +1411,7 @@ describe('SessionRunner — start gate', () => {
 
     expect(screen.queryByText('Start session')).toBeNull();
     expect(screen.getByText('Finish session')).toBeInTheDocument();
-    expect(weightInputs(0)).toHaveLength(3);
+    expect(indexRows()).toHaveLength(2);
     expect(screen.getByLabelText('Session time')).toHaveTextContent('0:00');
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     expect(screen.getByText(NUDGE)).toBeInTheDocument();
@@ -966,7 +1430,9 @@ describe('SessionRunner — draft-write regression', () => {
     );
     await flush();
 
-    fireEvent.click(tickButtons(0)[0]);
+    fireEvent.click(indexRow('Bench Press'));
+    await flush();
+    fireEvent.click(tickButtons()[0]);
     await flush();
 
     const before = draftWrites();

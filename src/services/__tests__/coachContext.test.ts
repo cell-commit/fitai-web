@@ -263,6 +263,29 @@ describe('buildContextBlock', () => {
     expect(block).toContain('Slept 6.5h avg');
   });
 
+  // The in-gym comment box is only worth having if what he types reaches the
+  // model that writes next week. This digest used to drop per-exercise notes.
+  it('carries his per-exercise comments into the recent-session digest', () => {
+    const block = buildContextBlock({
+      ...CONTEXT_DATA,
+      recentLogs: [
+        {
+          ...LOGS[0],
+          exercises: [
+            { ...LOGS[0].exercises[0], note: 'was easy, up the weight next time' },
+          ],
+        },
+      ],
+    });
+
+    expect(block).toContain('Leg Press 12/12 @ 100kg');
+    expect(block).toContain('[his comment: was easy, up the weight next time]');
+  });
+
+  it('adds nothing for an exercise he did not comment on', () => {
+    expect(buildContextBlock(CONTEXT_DATA)).not.toContain('his comment');
+  });
+
   it('handles no program / no logs gracefully', () => {
     const block = buildContextBlock({
       program: null,

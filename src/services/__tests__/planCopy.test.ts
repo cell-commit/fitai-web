@@ -111,6 +111,57 @@ describe('PROGRAMMING_RULES prompt block', () => {
     expect(PROGRAMMING_RULES).toMatch(/conventional gym names/i);
     expect(PROGRAMMING_RULES).toMatch(/never from invented/i);
   });
+
+  // Coach tips: the exercise page shows the prescribed tempo and the cue
+  // together at the top, so the coach is told when a tempo is worth setting.
+  it('allows a tempo prescription in 4-digit notation, where it matters', () => {
+    expect(PROGRAMMING_RULES).toMatch(/TEMPO/);
+    expect(PROGRAMMING_RULES).toMatch(/4-digit/i);
+    expect(PROGRAMMING_RULES).toMatch(/4030|2010/);
+    expect(PROGRAMMING_RULES).toMatch(/rehab/i);
+    // …and the cue beside it keeps its existing limit.
+    expect(PROGRAMMING_RULES).toMatch(/12-word|12 words/);
+  });
+
+  it('tells the coach to read and act on his per-exercise comments', () => {
+    expect(PROGRAMMING_RULES).toMatch(/comments/i);
+    expect(PROGRAMMING_RULES).toMatch(/easy/i);
+    expect(PROGRAMMING_RULES).toMatch(/niggle/i);
+  });
+});
+
+describe('PROGRAM_SCHEMA tempo field', () => {
+  it('is nullable-and-required like the other optional fields', () => {
+    const ex = prop(PROGRAM_SCHEMA, [
+      'properties',
+      'days',
+      'items',
+      'properties',
+      'exercises',
+      'items',
+    ]);
+    const props = ex.properties as Record<string, { type: unknown }>;
+    expect(props.tempo).toBeTruthy();
+    expect(props.tempo.type).toEqual(['string', 'null']);
+    expect(ex.required).toContain('tempo');
+    expect(ex.additionalProperties).toBe(false);
+  });
+
+  it('describes the notation and says not to set it everywhere', () => {
+    const d = description(PROGRAM_SCHEMA, [
+      'properties',
+      'days',
+      'items',
+      'properties',
+      'exercises',
+      'items',
+      'properties',
+      'tempo',
+    ]);
+    expect(d).toMatch(/4-digit/i);
+    expect(d).toMatch(/4030|2010/);
+    expect(d).toMatch(/null/);
+  });
 });
 
 describe('update_weekly_program tool copy limits', () => {

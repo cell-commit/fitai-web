@@ -890,23 +890,6 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
-/* Reachable, but deliberately quiet — removing a set is not what he is here
- * to do. Full row height, so it is still an easy hit. */
-.set-row__remove {
-  width: 22px;
-  height: 46px;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  opacity: 0.65;
-  font-size: var(--fs-lg);
-  line-height: 1;
-}
-
-.set-row__remove:active {
-  color: var(--danger);
-}
-
 /* Hide number-input spinners for a cleaner look */
 .stepper__input::-webkit-outer-spin-button,
 .stepper__input::-webkit-inner-spin-button,
@@ -971,11 +954,11 @@ a {
  * Apple Watch nudge. Kept beside the .set-row / .finish-footer rules above
  * because it extends them (the set row gains a ✓ column). */
 
-/* The ✓ column sits between the reps stepper and the remove ×: idx | kg |
- * reps stepper | ✓ | ×. Fixed columns total 158px + 20px of gaps, leaving the
- * stepper ~131px at 375px — enough for two 42px buttons and a 41px input. */
+/* The ✓ is the last column now that the remove × is gone (it became a bin
+ * behind the row — see the swipe-to-delete block above): idx | kg | reps
+ * stepper | ✓. The 22px the × used to hold goes back to the stepper. */
 .set-row {
-  grid-template-columns: 18px 72px minmax(0, 1fr) 46px 22px;
+  grid-template-columns: 18px 72px minmax(0, 1fr) 46px;
 }
 
 .set-row__tick {
@@ -1032,6 +1015,226 @@ a {
   color: var(--text-muted);
   opacity: 0.65;
   font-style: italic;
+}
+
+/* ── Session index + per-exercise pages ─────────────────────
+ * The session is no longer one long scroll of every exercise and every set
+ * row: it is an index (one row per exercise, with progress) plus a page per
+ * exercise. These rules extend the .ex-card / .set-row block above, because
+ * the page still IS an exercise card — it just has the screen to itself. */
+
+.session-index {
+  list-style: none;
+  margin: var(--sp-md) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-sm);
+}
+
+.exindex-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  padding: var(--sp-sm) var(--sp-md);
+  min-height: 64px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  color: var(--text);
+}
+
+.exindex-row:active {
+  background: var(--surface-2);
+}
+
+.exindex-row .exrow__body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.exindex-row__progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A finished exercise is struck off the list, not merely counted: he should be
+ * able to see what is left from the rack without reading the numbers. */
+.exindex-row--done {
+  border-color: var(--success);
+}
+
+.exindex-row--done .exrow__name {
+  color: var(--text-secondary);
+}
+
+.exindex-row--done .exindex-row__progress {
+  color: var(--success);
+}
+
+.exindex-row__tick {
+  color: var(--success);
+  font-size: var(--fs-md);
+  line-height: 1;
+}
+
+/* Exercise page */
+.ex-page__nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm);
+  margin-bottom: var(--sp-sm);
+}
+
+.ex-page__back {
+  padding-left: 0;
+}
+
+.ex-page__position {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* COACH TIPS: what the coach prescribed for THIS movement — the tempo and the
+ * cue, read in one glance between sets. Above the set rows because it changes
+ * how the next set is performed. */
+.coach-tips {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  margin-bottom: var(--sp-md);
+}
+
+.coach-tips__label {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.coach-tips__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-sm);
+}
+
+.coach-tips__key {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.coach-tips__tempo {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+}
+
+.coach-tips__cue {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+/* His comment on the movement — the thing next week's programming reads. */
+.ex-comment__textarea {
+  resize: none;
+  margin-top: 4px;
+}
+
+/* The "exercise complete" beat before the auto-return. Deliberately a soft
+ * status strip, never a modal: it must not block the add-set button or the
+ * comment box, because touching either is what cancels the return. */
+.ex-page__complete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  border-radius: var(--r-lg);
+  background: var(--success-muted);
+  color: var(--success);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+
+.ex-page__complete-tick {
+  font-size: var(--fs-md);
+}
+
+/* ── Swipe-to-delete a set row ──────────────────────────────
+ * WAS: a permanent × on the end of every row — a destructive control one fat
+ * thumb from the reps stepper for the whole session. Now the bin lives BEHIND
+ * the row: swipe left (or long-press, or tab to it) to bring it out.
+ *
+ * The wrapper's padding and margin cancel out, so the rows sit exactly where
+ * they did; the padding exists only to give the active row's 6px glow room
+ * inside the overflow clip that hides the sliding row. */
+.set-row-wrap {
+  position: relative;
+  overflow: hidden;
+  padding: 6px 8px;
+  margin: -6px -8px;
+  /* Vertical scrolling stays the browser's — only horizontal travel is ours. */
+  touch-action: pan-y;
+}
+
+.set-row-wrap .set-row {
+  /* Opaque, so the bin behind it is invisible until the row slides away. */
+  background: var(--surface);
+  transition: transform 0.18s ease;
+}
+
+.set-row-wrap--revealed .set-row {
+  transform: translateX(-72px);
+}
+
+.set-row__bin {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  right: 8px;
+  width: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--r-sm);
+  background: var(--danger);
+  color: #fff;
+  font-size: var(--fs-lg);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.set-row-wrap--revealed .set-row__bin {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Keyboard users never swipe: focusing the bin reveals it (see ExercisePage),
+ * and the focus ring has to be visible when it does. */
+.set-row__bin:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
 }
 
 /* ── Rest timer: a floating circular pop-out ────────────────

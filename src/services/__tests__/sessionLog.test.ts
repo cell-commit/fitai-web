@@ -149,6 +149,29 @@ describe('renderSessionMarkdown', () => {
     );
   });
 
+  // Hop 2 of the in-gym comment's journey (draft → log → HERE → coach context):
+  // what he typed against a movement has to survive into the Drive history file.
+  it('includes his per-exercise comment on that exercise’s line', () => {
+    const md = renderSessionMarkdown(
+      fixtureLog({
+        feedback: undefined,
+        exercises: [
+          {
+            name: 'Leg Press',
+            slug: 'Leg_Press',
+            targetSets: 3,
+            targetRepRange: '12-15',
+            sets: [{ reps: 12, weightKg: 40 }],
+            note: 'easy — up the weight next time',
+          },
+        ],
+      })
+    );
+    expect(md).toBe(
+      '## 2026-07-14 — Push\n\n- Leg Press — 12 @ 40kg (target 3×12-15) — easy — up the weight next time'
+    );
+  });
+
   it('notes the planned day in the heading when it differs from the log date', () => {
     const md = renderSessionMarkdown(
       fixtureLog({ date: '2026-07-16', feedback: undefined }),
