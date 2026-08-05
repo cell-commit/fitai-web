@@ -2578,3 +2578,128 @@ a {
   max-height: 100%;
   object-fit: contain;
 }
+
+/* ── Rest timer upgrades (Aug 2026) ─────────────────────────
+ * Appended, not edited in place, so every rule below overrides its twin in the
+ * original .rest-pop block a few hundred lines up (same specificity, later wins).
+ * Four things: 1.5× overall, a much thicker ring, DANGER RED past zero, and a
+ * draggable pop-out. Written for one thumb, at arm's length, in a gym. */
+
+/* 1.5× the original 156px. Everything inside scales with it. */
+.rest-pop {
+  width: 234px;
+  height: 234px;
+  /* The face is a drag handle: without this iOS scrolls the session list
+   * underneath instead of moving the timer. */
+  touch-action: none;
+}
+
+/* Once he has dragged it, JS supplies left/top and the default corner's
+ * `right` is overridden inline; this just documents the swap. */
+.rest-pop--moved {
+  right: auto;
+}
+
+/* The ring was a ~2px rim around an almost-full-width face. Widening the stroke
+ * AND pulling the face in turns it into a band you can read across a room.
+ * R (46) + half the stroke (3.5) = 49.5, inside the 100×100 viewBox. */
+.rest-pop__ring-track,
+.rest-pop__ring-fill {
+  stroke-width: 7;
+}
+
+/* Face inset 16px vs the band's inner edge at ~99px from centre → ~16px of
+ * ring visible all the way round. Padding keeps the readout in the corridor
+ * between the (now bigger) ±15 buttons. */
+.rest-pop__face {
+  inset: 16px;
+  padding: 0 52px;
+  gap: 2px;
+  touch-action: none;
+  /* iOS: no text selection, no magnifier, no callout while dragging. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.rest-pop__hint {
+  font-size: 15px;
+}
+
+.rest-pop__total {
+  font-size: 16px;
+}
+
+.rest-pop__clock {
+  font-size: var(--fs-xxxl); /* 36px — exactly 1.5× the old --fs-xl. */
+}
+
+.rest-pop__adjust {
+  width: 54px;
+  height: 66px;
+  font-size: var(--fs-sm);
+}
+
+.rest-pop__adjust--minus {
+  left: 8px;
+}
+
+.rest-pop__adjust--plus {
+  right: 8px;
+}
+
+/* Ring, countdown and label all take --rest-pop-color, which RestTimer.tsx sets
+ * inline: accent while it runs, DANGER RED past zero (it used to go success
+ * green, which reads as "all good, carry on" when the point is "move"). The
+ * beep is a bonus — iOS mutes WebAudio on the ringer switch and kills it when
+ * backgrounded — so this colour is the primary signal, which is why it lives in
+ * tested component code instead of only in this untested stylesheet.
+ *
+ * The --over selectors are repeated below purely to out-specify the original
+ * `var(--success)` rules further up the file; the value is the same variable. */
+.rest-pop__ring-fill,
+.rest-pop--over .rest-pop__ring-fill {
+  stroke: var(--rest-pop-color, var(--accent));
+}
+
+.rest-pop__clock,
+.rest-pop--over .rest-pop__clock {
+  color: var(--rest-pop-color, var(--accent));
+}
+
+.rest-pop--over .rest-pop__total {
+  color: var(--rest-pop-color, var(--danger));
+}
+
+.rest-pop--over .rest-pop__face {
+  border-color: var(--danger);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.35),
+    0 0 0 1px var(--danger-muted);
+}
+
+/* Appears only once the pop-out has been moved (see RestTimer.tsx). Sibling of
+ * the face, so tapping it never skips the rest. */
+.rest-pop__reset {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  width: 48px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-round);
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--fs-lg);
+  line-height: 1;
+  z-index: 1;
+}
+
+.rest-pop__reset:active {
+  color: var(--accent);
+}

@@ -523,3 +523,56 @@ export async function setExerciseMatch(
   cache[normalizedName] = slug;
   await store.setItem(KEYS.EXERCISE_MATCH_CACHE, JSON.stringify(cache));
 }
+
+// ─────────────────────────────────────────────────────────────
+// Rest-timer pop-out position
+// ─────────────────────────────────────────────────────────────
+//
+// Where Jason last dragged the floating rest countdown to, as the viewport-px
+// top-left of the pop-out. Two deliberate departures from the rest of this file:
+//
+//  • It is SYNCHRONOUS (raw localStorage, not the async `kv` adapter). The
+//    position has to be known on RestTimer's very first render, or the pop-out
+//    would paint at the default spot and visibly jump on the next frame; and it
+//    is written from inside a pointerup handler where a floating promise would
+//    be one more thing to get wrong.
+//  • It is NOT part of Settings. Settings is a read-modify-write of one JSON
+//    blob; a drag-end write racing a settings save would clobber real
+//    preferences to store a scroll position. Its own key can't lose anything.
+//
+// Writing is drag-END only — never on a tick. RestTimer re-renders twice a
+// second for the whole rest, and the session draft's write-on-change effect is
+// under a regression test that counts localStorage writes.
+
+export const REST_POP_POS_KEY = '@fitai/rest_pop_pos';
+
+export interface RestPopPos {
+  /** Viewport px from the left edge to the pop-out's left edge. */
+  x: number;
+  /** Viewport px from the top edge to the pop-out's top edge. */
+  y: number;
+}
+
+/** The stored position, or null when he has never moved it (or it is junk). */
+export function getRestPopPos(): RestPopPos | null {
+  try {
+    const raw = localStorage.getItem(REST_POP_POS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<RestPopPos>;
+    if (typeof parsed?.x !== 'number' || typeof parsed?.y !== 'number') return null;
+    if (!Number.isFinite(parsed.x) || !Number.isFinite(parsed.y)) return null;
+    return { x: parsed.x, y: parsed.y };
+  } catch {
+    return null;
+  }
+}
+
+/** Persist a dragged position, or pass null to go back to the default corner. */
+export function saveRestPopPos(pos: RestPopPos | null): void {
+  try {
+    if (pos === null) localStorage.removeItem(REST_POP_POS_KEY);
+    else localStorage.setItem(REST_POP_POS_KEY, JSON.stringify({ x: pos.x, y: pos.y }));
+  } catch {
+    // Private mode / quota — the timer still works, it just forgets the spot.
+  }
+}
