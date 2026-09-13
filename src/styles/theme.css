@@ -1,35 +1,37 @@
-/* FitAI theme — slate variant (dark blue-grey, chosen by Jason Jul 2026).
- * Originally ported from the RN app's #0D0D0D palette; hues shifted to a
- * slate ramp, everything else unchanged. Components style with var(--…). */
+/* FitAI theme — charcoal + yellow (Jason's pick, Sep 2026).
+ * History: near-black + orange → slate + teal (Jul 2026) → this.
+ * Components style with var(--…); colours live only here. */
 
 :root {
-  /* Surfaces */
-  --bg: #0f172a;
-  --surface: #1e293b;
-  --surface-2: #263449;
-  --surface-3: #324158;
+  /* Surfaces — neutral charcoal ramp, no blue cast */
+  --bg: #1a1a1a;
+  --surface: #252525;
+  --surface-2: #2e2e2e;
+  --surface-3: #3a3a3a;
 
-  /* Accent — teal (Jason's pick, Jul 2026; was orange #ff6b35) */
-  --accent: #2dd4bf;
-  --accent-muted: rgba(45, 212, 191, 0.15);
-  --accent-glow: rgba(45, 212, 191, 0.08);
+  /* Accent — yellow. Buttons use dark text on it (--on-accent). */
+  --accent: #ffd60a;
+  --accent-muted: rgba(255, 214, 10, 0.15);
+  --accent-glow: rgba(255, 214, 10, 0.08);
+  --on-accent: #1a1a1a;
 
-  /* Status — success shifted green so it stays distinct from the teal accent */
+  /* Status — warning shifted to orange so a CAUTION chip never reads as the
+   * yellow accent; success stays green, danger red. */
   --success: #4ade80;
   --success-muted: rgba(74, 222, 128, 0.15);
-  --warning: #ffb800;
-  --warning-muted: rgba(255, 184, 0, 0.15);
+  --warning: #fb923c;
+  --warning-muted: rgba(251, 146, 60, 0.15);
   --danger: #ff4757;
   --danger-muted: rgba(255, 71, 87, 0.15);
 
-  /* Text */
-  --text: #f1f5f9;
-  --text-secondary: #a5b2c5;
-  --text-muted: #64748b;
+  /* Text — neutral greys */
+  --text: #f5f5f5;
+  --text-secondary: #b0b0b0;
+  --text-muted: #7a7a7a;
 
   /* Borders */
-  --border: #384860;
-  --border-light: #2c3a50;
+  --border: #3d3d3d;
+  --border-light: #303030;
 
   /* Font sizes (px, from RN theme.fontSizes) */
   --fs-xs: 13px;
