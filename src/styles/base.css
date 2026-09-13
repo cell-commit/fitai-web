@@ -73,7 +73,7 @@ a {
   height: calc(var(--tabbar-height) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   display: flex;
-  background: rgba(26, 26, 26, 0.92);
+  background: rgba(0, 0, 0, 0.88);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--border);
@@ -914,7 +914,7 @@ a {
   max-width: 640px;
   margin: 0 auto;
   padding: var(--sp-sm) var(--sp-md);
-  background: rgba(26, 26, 26, 0.94);
+  background: rgba(0, 0, 0, 0.9);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--border);
@@ -1295,7 +1295,7 @@ a {
   /* Keeps the readout inside the corridor between the ±15 buttons. */
   padding: 0 38px;
   border-radius: 50%;
-  background: rgba(26, 26, 26, 0.94);
+  background: rgba(0, 0, 0, 0.9);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border);
@@ -1416,7 +1416,7 @@ a {
   gap: var(--sp-sm);
   margin: 0 calc(-1 * var(--sp-md)) var(--sp-md);
   padding: var(--sp-sm) var(--sp-md);
-  background: rgba(26, 26, 26, 0.94);
+  background: rgba(0, 0, 0, 0.9);
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }

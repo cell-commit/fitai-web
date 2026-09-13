@@ -1,19 +1,21 @@
-/* FitAI theme — charcoal + yellow (Jason's pick, Sep 2026).
- * History: near-black + orange → slate + teal (Jul 2026) → this.
- * Components style with var(--…); colours live only here. */
+/* FitAI theme — black + yellow (Jason's pick, Sep 2026).
+ * History: near-black + orange → slate + teal (Jul 2026) → charcoal + yellow
+ * (read as "brown" next to the yellow) → this.
+ * Surfaces use Apple's dark-mode greys: their faint cool bias cancels the
+ * warm cast yellow throws onto neutral greys. Colours live only here. */
 
 :root {
-  /* Surfaces — neutral charcoal ramp, no blue cast */
-  --bg: #1a1a1a;
-  --surface: #252525;
-  --surface-2: #2e2e2e;
-  --surface-3: #3a3a3a;
+  /* Surfaces — true black ground, cool-neutral grey cards */
+  --bg: #000000;
+  --surface: #1c1c1e;
+  --surface-2: #2c2c2e;
+  --surface-3: #3a3a3c;
 
   /* Accent — yellow. Buttons use dark text on it (--on-accent). */
   --accent: #ffd60a;
   --accent-muted: rgba(255, 214, 10, 0.15);
   --accent-glow: rgba(255, 214, 10, 0.08);
-  --on-accent: #1a1a1a;
+  --on-accent: #000000;
 
   /* Status — warning shifted to orange so a CAUTION chip never reads as the
    * yellow accent; success stays green, danger red. */
@@ -24,14 +26,14 @@
   --danger: #ff4757;
   --danger-muted: rgba(255, 71, 87, 0.15);
 
-  /* Text — neutral greys */
-  --text: #f5f5f5;
-  --text-secondary: #b0b0b0;
-  --text-muted: #7a7a7a;
+  /* Text — Apple dark-mode label greys */
+  --text: #f5f5f7;
+  --text-secondary: #aeaeb2;
+  --text-muted: #8e8e93;
 
   /* Borders */
-  --border: #3d3d3d;
-  --border-light: #303030;
+  --border: #38383a;
+  --border-light: #2c2c2e;
 
   /* Font sizes (px, from RN theme.fontSizes) */
   --fs-xs: 13px;
